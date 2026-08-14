@@ -342,6 +342,13 @@ local function saveKnown()
     f.write(textutils.serialize(knownNodes))
     f.close()
 end
+-- sensors the plant EXPECTS: never-seen counts as loss of indication.
+-- extend this list as the plant grows (TANKS, FUEL, MATRIX, TB3...).
+local EXPECTED_SENSORS = {
+    "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_FUEL",
+}
+for _, r in ipairs(EXPECTED_SENSORS) do knownNodes[r] = true end
+
 local nodeUp = {}   -- role -> bool (last evaluated link state)
 
 local function nodeWatch()
@@ -666,22 +673,28 @@ end
 -- PAGE: ALARMS
 ---------------------------------------------------------------
 local function renderAlarms()
-    scr:panel(2, 5, W - 1, math.floor(H * 0.45), "ANNUNCIATOR")
+    W, H = scr.w, scr.h
     local perRow = 4
     local tw = math.floor((W - 8) / perRow)
+    local big = H >= 50
+    local th = big and 3 or 2
+    local gap = th + 1
+    local rows = math.ceil(#ALARM_DEFS / perRow)
+    local gridBot = 6 + rows * gap
+    scr:panel(2, 5, W - 1, gridBot + 1, "ANNUNCIATOR")
     for i, def in ipairs(ALARM_DEFS) do
         local row = math.floor((i - 1) / perRow)
         local col = (i - 1) % perRow
         local x1 = 4 + col * tw
-        local y1 = 7 + row * 4
+        local y1 = 7 + row * gap
         local a = alarmState[def.id]
         local state = "off"
         if a then state = a.acked and "warn" or a.state end
-        scr:tile(x1, y1, x1 + tw - 2, y1 + 2, def.label, state, flash)
+        scr:tile(x1, y1, x1 + tw - 2, y1 + th - 1, def.label, state, flash)
     end
-    scr:panel(2, math.floor(H * 0.45) + 2, W - 1, H - 5, "ALARM / EVENT LOG")
-    local ly = math.floor(H * 0.45) + 4
-    local maxRows = H - 5 - ly
+    scr:panel(2, gridBot + 3, W - 1, H - 5, "ALARM / EVENT LOG")
+    local ly = gridBot + 5
+    local maxRows = H - 6 - ly
     for i = 1, math.min(#alarmLog, maxRows) do
         local e = alarmLog[i]
         scr:text(4, ly + i - 1, e.time .. "  " .. e.text, e.colour, ui.c.panel)
@@ -1042,7 +1055,8 @@ local function handleAction(action)
     if not action then return end
     if action:sub(1, 5) == "page:" then
         page = action:sub(6)
-        local want = (page == "SETUP") and 1 or CONFIG.scale
+        local want = (page == "SETUP" or page == "ALARMS") and 1
+            or CONFIG.scale
         if scr.curScale ~= want then
             scr = ui.attach(scr.name, want)
             scr.curScale = want
