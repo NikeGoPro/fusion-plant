@@ -17,13 +17,13 @@ local BASE = "https://raw.githubusercontent.com/NikeGoPro/fusion-plant/main/"
 local PROG = {
     hmi = "hmi.lua", primary = "primary.lua", oneline = "oneline.lua",
     viewer = "viewer.lua", console = "console.lua", pa = "pa.lua",
-    sensor = "sensor_node.lua",
+    sensor = "sensor_node.lua", laser = "laser_node.lua",
 }
 
 local args = { ... }
 local role, sub = args[1], args[2]
 if not role or not PROG[role] then
-    print("usage: install <hmi|primary|oneline|viewer|console|pa|sensor> [sub]")
+    print("usage: install <hmi|primary|oneline|viewer|console|pa|sensor|laser> [sub]")
     print("  console needs RPCP or SPCP; sensor needs a node name (TB1...)")
     return
 end

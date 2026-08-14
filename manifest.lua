@@ -2,7 +2,7 @@
 -- verify[] markers: a string that MUST exist in the current file;
 -- protects against stale CDN copies being installed as "updated".
 return {
-    version = 13,
+    version = 15,
     files = {
         ["updater.lua"] = "updater.lua",
         ["ui.lua"] = "ui.lua",
@@ -13,6 +13,7 @@ return {
         ["primary.lua"] = "primary.lua",
         ["pa.lua"] = "pa.lua",
         ["sensor_node.lua"] = "sensor_node.lua",
+        ["laser_node.lua"] = "laser_node.lua",
     },
     verify = {
         ["updater.lua"] = "fleet auto-update v2",
@@ -24,5 +25,6 @@ return {
         ["primary.lua"] = "renderIgnition",
         ["pa.lua"] = "AMBIENT_VOLUME",
         ["sensor_node.lua"] = "turbine-grade",
+        ["laser_node.lua"] = "LASER ACTUATION NODE",
     },
 }
