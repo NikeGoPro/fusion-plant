@@ -75,11 +75,15 @@ end
 -- distilled tank summary from a dynamic tank valve (hot well etc.)
 local function readTank(p)
     local pct = tryCall(p, "getFilledPercentage")
-    if pct == nil then return nil end
-    return {
-        pct = pct,
-        capacity = tryCall(p, "getTankCapacity") or tryCall(p, "getCapacity"),
-    }
+    local stored = tryCall(p, "getStored")
+    local cap = tryCall(p, "getTankCapacity") or tryCall(p, "getCapacity")
+    if pct == nil and stored == nil then return nil end
+    local t = { pct = pct, capacity = cap }
+    if type(stored) == "table" then
+        t.content = stored.name
+        t.amount = stored.amount
+    end
+    return t
 end
 
 local GENERIC_TRY = {
@@ -140,34 +144,64 @@ print(("Sensor node NODE_%s online (%d modem(s) open)."):format(
 print("Broadcasting every " .. CONFIG.PERIOD .. "s. Ctrl+T to stop.")
 
 local n = 0
+local nextCast = 0
 while true do
-    n = n + 1
-    if n % 8 == 1 then
-        rednet.broadcast({ type = "hello", role = "NODE_" .. CONFIG.NODE },
-            "scada_hello")
+    if os.clock() >= nextCast then
+        n = n + 1
+        if n % 8 == 1 then
+            rednet.broadcast({ type = "hello", role = "NODE_" .. CONFIG.NODE },
+                "scada_hello")
+        end
+        local ok, packet = pcall(collect)
+        if ok then
+            rednet.broadcast(packet, "scada_sensor")
+            if n % 20 == 0 then
+                local bits = {}
+                if packet.turbine then
+                    bits[#bits + 1] = packet.turbine.formed
+                        and ("turbine OK flow=" .. tostring(
+                            packet.turbine.lastInput or packet.turbine.flow or 0))
+                        or "turbine UNFORMED"
+                end
+                if packet.tanks then
+                    local c = 0
+                    for _ in pairs(packet.tanks) do c = c + 1 end
+                    bits[#bits + 1] = c .. " tank(s)"
+                end
+                local c = 0
+                for _ in pairs(packet.readings) do c = c + 1 end
+                if c > 0 then bits[#bits + 1] = c .. " other" end
+                print(("[%s] %s"):format(os.date("%H:%M:%S"),
+                    #bits > 0 and table.concat(bits, ", ")
+                    or "no peripherals visible"))
+            end
+        end
+        nextCast = os.clock() + CONFIG.PERIOD
     end
-    local ok, packet = pcall(collect)
-    if ok then
-        rednet.broadcast(packet, "scada_sensor")
-        if n % 20 == 0 then
-            local bits = {}
-            if packet.turbine then
-                bits[#bits + 1] = packet.turbine.formed
-                    and ("turbine OK flow=" .. tostring(
-                        packet.turbine.lastInput or packet.turbine.flow or 0))
-                    or "turbine UNFORMED"
+    -- wait for the next broadcast slot, servicing actuation commands
+    local timer = os.startTimer(math.max(0.05, nextCast - os.clock()))
+    while true do
+        local ev, a, b, c = os.pullEvent()
+        if ev == "timer" and a == timer then break end
+        if ev == "rednet_message" and c == "scada_actuate"
+            and type(b) == "table" and b.target == CONFIG.NODE
+            and b.set == "injection" and type(b.value) == "number" then
+            local done = false
+            for _, name in ipairs(peripheral.getNames()) do
+                local p = peripheral.wrap(name)
+                if p and type(p.setInjectionRate) == "function" then
+                    local okc, err = pcall(p.setInjectionRate, b.value)
+                    print(("[%s] setInjectionRate(%d) %s"):format(
+                        os.date("%H:%M:%S"), b.value,
+                        okc and "OK" or ("FAILED: " .. tostring(err))))
+                    done = true
+                    break
+                end
             end
-            if packet.tank then
-                bits[#bits + 1] = ("tank %.0f%%"):format(
-                    (packet.tank.pct or 0) * 100)
+            if not done then
+                print("actuate: no peripheral with setInjectionRate here")
             end
-            local c = 0
-            for _ in pairs(packet.readings) do c = c + 1 end
-            if c > 0 then bits[#bits + 1] = c .. " other" end
-            print(("[%s] %s"):format(os.date("%H:%M:%S"),
-                #bits > 0 and table.concat(bits, ", ")
-                or "no peripherals visible"))
+            break
         end
     end
-    sleep(CONFIG.PERIOD)
 end

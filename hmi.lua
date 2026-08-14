@@ -53,6 +53,9 @@ local DATA = {
     injection = 98, hohlraum = true,
     -- fuel train: bulk tanks + production rates vs burn
     tanks = { li = 0.58, hw = 0.72, stor = 0.94 }, -- liq lithium, heavy water, water storage
+    -- nominal capacities (mB) for volume readouts; replaced by real
+    -- telemetry once tanks are bound. Deuterium measured at 4B.
+    tankCaps = { li = 4e9, hw = 4e9, stor = 4e9, deut = 4e9, trit = 4e9 },
     prodD = 0, prodT = 0, -- separator / SNA output, mB/t
     lasers = {0.98, 0.97, 1.0, 0.99},
     -- design/theoretical, water-cooled (real mode: getMaxPlasmaTemperature(true))
@@ -74,6 +77,9 @@ end
 local hist = { plasma = {}, case = {}, prod = {}, flow = {} }
 local telemetry = {}  -- node name -> { t, turbine, tank, readings }
 local TELEM_FRESH = 3 -- seconds
+local lastSentInj = nil    -- last injection demand pushed to the reactor
+local tankPrev = {}        -- D/T level history for computed production
+local rxWasIgnited = false -- rising-edge detect for already-burning reactor
 local prev = {}          -- for trend arrows
 local tick, flash = 0, false
 local page = "CORE"
@@ -228,8 +234,14 @@ local function valveTick()
         logEvent("REACTOR FLAMEOUT", ui.c.alarm)
     end
     DATA.injection = inj
-    -- REAL MODE: this is where inj gets pushed to the reactor port:
-    -- pcall(reactor.setInjectionRate, inj)
+    -- REAL ACTUATION: FCV/FV lineup drives the actual reactor via the
+    -- REACTOR sensor node (which calls setInjectionRate on its port).
+    if DATA.rxLive and paReady and inj ~= lastSentInj then
+        rednet.broadcast({ type = "actuate", target = "REACTOR",
+            set = "injection", value = inj }, "scada_actuate")
+        logEvent("INJECTION DEMAND -> " .. inj .. " mB/t", ui.c.accentDim)
+        lastSentInj = inj
+    end
 end
 
 -- overlay live sensor telemetry onto plant data (real beats sim)
@@ -263,9 +275,11 @@ local function mergeTelemetry()
     local rt = telemetry["REACTOR"]
     if rt and os.clock() - rt.t < TELEM_FRESH and rt.readings then
         for _, e in pairs(rt.readings) do
-            if e.getPlasmaTemperature ~= nil then
+            if e.getPlasmaTemperature ~= nil or e.isIgnited ~= nil then
                 DATA.rxLive = true
-                DATA.plasmaTemp = e.getPlasmaTemperature
+                if e.getPlasmaTemperature then
+                    DATA.plasmaTemp = e.getPlasmaTemperature
+                end
                 DATA.caseTemp = e.getCaseTemperature or DATA.caseTemp
                 DATA.ignited = e.isIgnited == true
                 if e.getInjectionRate then DATA.injection = e.getInjectionRate end
@@ -283,6 +297,63 @@ local function mergeTelemetry()
                     DATA.passiveGen = e.getPassiveGeneration * 0.4
                 end
                 break
+            end
+        end
+        -- (reactor section continues below)
+        -- backup online detection: reactor already burning (or link
+        -- restored mid-run) lights the plant up without our sequence
+        if DATA.rxLive then
+            if DATA.ignited and not rxWasIgnited then
+                logEvent("REACTOR REPORTING IGNITED - MODE 1", ui.c.ok)
+                paAmbient("engine_room")
+            elseif not DATA.ignited and rxWasIgnited then
+                logEvent("REACTOR REPORTING SHUTDOWN", ui.c.warn)
+                paAmbient(nil)
+            end
+            rxWasIgnited = DATA.ignited
+        end
+    end
+    -- tanks: AUTO-BIND by stored substance (no name mapping needed).
+    -- a tank identifies itself by what's in it; empty tanks stay sim
+    -- until they contain a trace of their substance.
+    DATA.tanksLive = false
+    local tt = telemetry["TANKS"]
+    if tt and os.clock() - tt.t < TELEM_FRESH and tt.tanks then
+        for _, tk in pairs(tt.tanks) do
+            local nm = tostring(tk.content or ""):lower()
+            local key
+            if nm:find("deuterium") then key = "deut"
+            elseif nm:find("tritium") then key = "trit"
+            elseif nm:find("lithium") then key = "li"
+            elseif nm:find("heavy") then key = "hw"
+            elseif nm:find("water") then key = "stor" end
+            if key then
+                DATA.tanksLive = true
+                local pct = tk.pct
+                if tk.amount and tk.capacity and tk.capacity > 0 then
+                    pct = tk.amount / tk.capacity -- ratio beats the API pct
+                end
+                pct = math.max(0, math.min(1, pct or 0))
+                if key == "deut" then DATA.deut = pct
+                elseif key == "trit" then DATA.trit = pct
+                else DATA.tanks[key] = pct end
+                if tk.capacity and tk.capacity > 0 then
+                    DATA.tankCaps[key] = tk.capacity
+                end
+                if (key == "deut" or key == "trit") and tk.amount then
+                    local pv = tankPrev[key]
+                    local now = os.clock()
+                    if not pv then
+                        tankPrev[key] = { amt = tk.amount, t = now }
+                    elseif now - pv.t >= 5 then
+                        local net = (tk.amount - pv.amt) / ((now - pv.t) * 20)
+                        local burn = DATA.ignited and DATA.injection / 2 or 0
+                        local prod = math.max(0, net + burn)
+                        if key == "deut" then DATA.prodD = prod
+                        else DATA.prodT = prod end
+                        tankPrev[key] = { amt = tk.amount, t = now }
+                    end
+                end
             end
         end
     end
@@ -307,10 +378,12 @@ local function readData()
         DATA.deut   = clamp(DATA.deut - 0.0004 + math.random() * 0.0008, 0.05, 1)
         DATA.trit   = clamp(DATA.trit - 0.0004 + math.random() * 0.0008, 0.05, 1)
         DATA.dtfuel = clamp(DATA.dtfuel + (math.random() - 0.5) * 0.01, 0.1, 1)
-        -- fuel production: D steady, T swings (SNA daylight/weather realism)
-        DATA.prodD = approach(DATA.prodD, 52 + math.random(-1, 1), 0.1)
-        DATA.prodT = approach(DATA.prodT,
-            44 + 10 * math.sin(tick / 180) + math.random(-2, 2), 0.05)
+        -- fuel production: sim only until real tank deltas take over
+        if not DATA.tanksLive then
+            DATA.prodD = approach(DATA.prodD, 52 + math.random(-1, 1), 0.1)
+            DATA.prodT = approach(DATA.prodT,
+                44 + 10 * math.sin(tick / 180) + math.random(-2, 2), 0.05)
+        end
         DATA.tanks.li = clamp(DATA.tanks.li + (math.random() - 0.5) * 0.004, 0.1, 0.95)
         DATA.tanks.hw = clamp(DATA.tanks.hw + (math.random() - 0.5) * 0.004, 0.1, 0.95)
         DATA.tanks.stor = clamp(1 - DATA.steam * 0.5 + (math.random() - 0.5) * 0.02,
