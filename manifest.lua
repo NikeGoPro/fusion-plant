@@ -1,6 +1,5 @@
--- edit version + push to your repo (github mode) or paste (pastebin mode)
 return {
-    version = 1,
+    version = 2,
     files = {
         ["ui.lua"] = "ui.lua",
         ["hmi.lua"] = "hmi.lua",

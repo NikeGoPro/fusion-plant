@@ -24,6 +24,14 @@ local CONFIG = {
     PERIOD = 0.5,
 }
 
+-- per-computer node name lives in a local "role" file (e.g. TB1),
+-- so fleet updates never reset it.
+if fs.exists("role") then
+    local f = fs.open("role", "r")
+    CONFIG.NODE = f.readAll():gsub("%s+", "")
+    f.close()
+end
+
 local modem = peripheral.find("modem")
 if not modem then error("Sensor node needs a modem", 0) end
 rednet.open(peripheral.getName(modem))

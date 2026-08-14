@@ -42,7 +42,7 @@ newer, this role's files are re-downloaded and the computer reboots.
 
 local CONFIG = {
     MODE = "github",
-    BASE = "https://raw.githubusercontent.com/YOURNAME/fusion-plant/main/",
+    BASE = "https://raw.githubusercontent.com/NikeGoPro/fusion-plant/main/",
     MANIFEST = "XXXXXXXX", -- pastebin mode only
 }
 

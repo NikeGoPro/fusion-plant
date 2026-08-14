@@ -17,6 +17,14 @@ local CONFIG = {
     scale = 0.5,
 }
 
+-- per-computer role lives in a local file the updater never touches:
+-- put RPCP or SPCP (one word) in a file named "role" on this computer.
+if fs.exists("role") then
+    local f = fs.open("role", "r")
+    CONFIG.ROLE = f.readAll():gsub("%s+", "")
+    f.close()
+end
+
 local scr = ui.attach(nil, CONFIG.scale)
 local modem = peripheral.find("modem")
 if not modem then error("Console needs a modem on the plant network", 0) end
