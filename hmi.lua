@@ -51,6 +51,7 @@ local DATA = {
     envLoss = 0, transferLoss = 0,
     water = 0.94, steam = 0.06, deut = 0.81, trit = 0.67, dtfuel = 0.42,
     injection = 98, hohlraum = true,
+    battleshort = false, -- protection bypass: annunciate, don't actuate
     -- fuel train: bulk tanks + production rates vs burn
     tanks = { li = 0.58, hw = 0.72, stor = 0.94 }, -- liq lithium, heavy water, water storage
     -- nominal capacities (mB) for volume readouts; replaced by real
@@ -69,6 +70,30 @@ local DATA = {
         fcv = { pos = 0, demand = 0 },
     },
 }
+-- valve lineup survives reboots (no phantom shut valves on restart)
+if fs.exists("valve_state") then
+    local f = fs.open("valve_state", "r")
+    local vs = textutils.unserialize(f.readAll())
+    f.close()
+    if type(vs) == "table" then
+        for k, v in pairs(vs) do
+            if DATA.valves[k] then
+                DATA.valves[k].demand = v
+                DATA.valves[k].pos = v
+            end
+        end
+    end
+end
+local function saveValves()
+    local f = fs.open("valve_state", "w")
+    f.write(textutils.serialize({
+        fvd = DATA.valves.fvd.demand,
+        fvt = DATA.valves.fvt.demand,
+        fcv = DATA.valves.fcv.demand,
+    }))
+    f.close()
+end
+
 for i = 1, 2 do
     DATA.turbines[i] = { flow = 0, prod = 0, steamPct = 0.05,
                          buffer = 0.2, water = 0.55, mode = "IDLE", online = true }
@@ -78,6 +103,8 @@ local hist = { plasma = {}, case = {}, prod = {}, flow = {} }
 local telemetry = {}  -- node name -> { t, turbine, tank, readings }
 local TELEM_FRESH = 5 -- seconds (ride through server lag without flapping LIVE)
 local lastSentInj = nil    -- last injection demand pushed to the reactor
+local tripLatched = false  -- RPS protective action one-shot
+local prevRed = false
 local tankPrev = {}        -- D/T level history for computed production
 local rxWasIgnited = false -- rising-edge detect for already-burning reactor
 local prev = {}          -- for trend arrows
@@ -179,6 +206,31 @@ local function raiseAlarm(id, label, state)
         1, state == "alarm" and 0.6 or 1.2)
 end
 
+local PROTECTIVE = { PLT_HI = true, CST_HI = true, WTR_LO = true,
+    STM_HI = true, TB_TRIP = true, MTX_HI = true }
+
+local function rpsAction()
+    local red = false
+    for id in pairs(PROTECTIVE) do
+        local a = alarmState[id]
+        if a and a.state == "alarm" then red = true break end
+    end
+    if red and not prevRed then
+        if DATA.battleshort then
+            logEvent("RPS TRIP BLOCKED - BATTLESHORT", ui.c.warn)
+        elseif DATA.ignited and not tripLatched then
+            tripLatched = true
+            DATA.valves.fcv.demand = 0
+            saveValves()
+            logEvent("RPS TRIP - FCV CLOSING"
+                .. (firstOut and (" (" .. firstOut .. ")") or ""), ui.c.alarm)
+            pa("scram_voice")
+        end
+    end
+    if not red then tripLatched = false end
+    prevRed = red
+end
+
 local function evalAlarms()
     for _, def in ipairs(ALARM_DEFS) do
         local s = def.f(DATA)
@@ -239,6 +291,7 @@ local function valveTick()
         if t.online then nOn = nOn + 1 end
     end
     local permInj = math.min(98, math.floor(nOn * 78 / 2) * 2)
+    if DATA.battleshort then permInj = 98 end
     if inj > permInj then
         if not DATA.runback then
             logEvent("AUTO RUNBACK - PERM INJ " .. permInj .. " mB/t",
@@ -333,6 +386,17 @@ local function mergeTelemetry()
             if DATA.ignited and not rxWasIgnited then
                 logEvent("REACTOR REPORTING IGNITED - MODE 1", ui.c.ok)
                 paAmbient("engine_room")
+                -- adopt the lineup: reactor is burning, so the valves are
+                -- open whatever this computer thought at boot
+                if DATA.valves.fvd.pos < 99 or DATA.valves.fcv.pos < 2 then
+                    DATA.valves.fvd.demand = 100; DATA.valves.fvd.pos = 100
+                    DATA.valves.fvt.demand = 100; DATA.valves.fvt.pos = 100
+                    local p = math.max(2, math.min(100,
+                        (DATA.injection / 98) * 100))
+                    DATA.valves.fcv.demand = p; DATA.valves.fcv.pos = p
+                    saveValves()
+                    logEvent("LINEUP ADOPTED FROM RUNNING REACTOR", ui.c.okDim)
+                end
             elseif not DATA.ignited and rxWasIgnited then
                 logEvent("REACTOR REPORTING SHUTDOWN", ui.c.warn)
                 paAmbient(nil)
@@ -375,7 +439,7 @@ local function mergeTelemetry()
                     local now = os.clock()
                     if not pv then
                         tankPrev.dtf = { amt = tk.amount, t = now }
-                    elseif now - pv.t >= 5 then
+                    elseif now - pv.t >= 15 then
                         DATA.dtBurn = math.max(0,
                             (pv.amt - tk.amount) / ((now - pv.t) * 20))
                         tankPrev.dtf = { amt = tk.amount, t = now }
@@ -386,7 +450,7 @@ local function mergeTelemetry()
                     local now = os.clock()
                     if not pv then
                         tankPrev[key] = { amt = tk.amount, t = now }
-                    elseif now - pv.t >= 5 then
+                    elseif now - pv.t >= 15 then
                         local net = (tk.amount - pv.amt) / ((now - pv.t) * 20)
                         local burn = DATA.ignited and DATA.injection / 2 or 0
                         local prod = math.max(0, net + burn)
@@ -438,7 +502,7 @@ local function readData()
                 t.buffer = clamp(t.buffer + (math.random() - 0.5) * 0.05, 0.1, 0.95)
                 t.mode = "DUMP_EXC"
                 if t.flow > 100 then
-                    t.water = clamp(approach(t.water, 0.55, 0.05)
+                    t.water = clamp(approach(t.water or 0.55, 0.55, 0.05)
                         + (math.random() - 0.5) * 0.04, 0.05, 0.95)
                 else
                     -- steaming without flow: hot well dries out
@@ -471,6 +535,7 @@ local function readData()
         for i = 1, 4 do DATA.lasers[i] = clamp(DATA.lasers[i] + 0.01, 0, 1) end
     end
     mergeTelemetry()
+    rpsAction()
     push(hist.plasma, DATA.plasmaTemp); push(hist.case, DATA.caseTemp)
     push(hist.prod, DATA.production);   push(hist.flow, DATA.steamFlow)
     evalAlarms()
@@ -593,6 +658,9 @@ local function drawChrome()
         ui.c.text, ui.c.panel)
     if DATA.runback then
         scr:text(50, by, "RUNBACK", ui.c.warn, ui.c.panel)
+    end
+    if DATA.battleshort and flash then
+        scr:text(60, by, " ** BATTLESHORT ** ", ui.c.text, ui.c.alarm)
     end
     local bw = math.floor(W * 0.08)
     scr:button(3, by + 1, 3 + bw, by + 2, "FV-D", ui.c.line, "fvd", true)
@@ -946,6 +1014,32 @@ local function renderSetup()
     end
     y = y + 2
 
+    scr:text(4, y, "-- TANK BINDINGS (TANKS node) --", ui.c.accent, ui.c.panel)
+    y = y + 1
+    local tt = telemetry["TANKS"]
+    if tt and tt.tanks then
+        for nm2, tk in pairs(tt.tanks) do
+            if y > H - 16 then break end
+            local c2 = tostring(tk.content or "EMPTY")
+            local key = "UNMATCHED"
+            local low = c2:lower()
+            if low:find("fusion") or low:find("d_t") then key = "D-T FUEL"
+            elseif low:find("deuterium") then key = "DEUTERIUM"
+            elseif low:find("tritium") then key = "TRITIUM"
+            elseif low:find("lithium") then key = "LITHIUM"
+            elseif low:find("heavy") then key = "HEAVY WATER"
+            elseif low:find("water") then key = "WATER STG" end
+            scr:text(4, y, nm2:sub(1, 20), ui.c.dim, ui.c.panel)
+            scr:text(26, y, c2:gsub("^.*:", ""):sub(1, 14), ui.c.text, ui.c.panel)
+            scr:text(42, y, key, key == "UNMATCHED" and ui.c.alarm or ui.c.ok,
+                ui.c.panel)
+            y = y + 1
+        end
+    else
+        scr:text(4, y, "NO TANKS TELEMETRY", ui.c.alarm, ui.c.panel)
+        y = y + 1
+    end
+    y = y + 1
     scr:text(4, y, "-- WIRED PERIPHERALS --", ui.c.accent, ui.c.panel)
     y = y + 1
     local counts, order = {}, {}
@@ -1266,15 +1360,25 @@ local function handleAction(action)
     elseif action == "fvd" or action == "fvt" then
         local v = DATA.valves[action]
         v.demand = (v.demand > 50) and 0 or 100
+        saveValves()
         logEvent(action:upper() .. (v.demand > 50 and " OPENING" or " CLOSING"),
             v.demand > 50 and ui.c.okDim or ui.c.warn)
         ui.beep(v.demand > 50 and 12 or 6)
+    elseif action == "battleshort" then
+        DATA.battleshort = not DATA.battleshort
+        logEvent(DATA.battleshort and "** BATTLESHORT SET - PROTECTION BYPASSED **"
+            or "BATTLESHORT CLEARED - PROTECTION RESTORED",
+            DATA.battleshort and ui.c.alarm or ui.c.ok)
+        ui.sound(DATA.battleshort and "block.note_block.didgeridoo"
+            or "block.note_block.bell", 1, 0.6)
     elseif action == "fcvUp" or action == "injUp" then
         -- one throttle step = one injection step = 2 mB/t (49 steps to 98)
         DATA.valves.fcv.demand = clamp(DATA.valves.fcv.demand + 100 / 49, 0, 100)
+        saveValves()
         ui.beep(12)
     elseif action == "fcvDown" or action == "injDown" then
         DATA.valves.fcv.demand = clamp(DATA.valves.fcv.demand - 100 / 49, 0, 100)
+        saveValves()
         ui.beep(8)
     end
 end

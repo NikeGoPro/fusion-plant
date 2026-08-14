@@ -88,6 +88,7 @@ end
 
 local GENERIC_TRY = {
     "getPlasmaTemperature", "getCaseTemperature", "isIgnited",
+    "getMaxPlasmaTemperature", "getMaxCasingTemperature",
     "getInjectionRate", "getProductionRate", "getPassiveGeneration",
     "getWaterFilledPercentage", "getSteamFilledPercentage",
     "getDeuteriumFilledPercentage", "getTritiumFilledPercentage",

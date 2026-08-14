@@ -34,6 +34,8 @@ local CONFIG = {
     SIDE  = "back",
     COLOR = nil,   -- e.g. "white" to drive a bundled cable channel
     PULSE = 3.0,   -- seconds the fire line stays energized
+    DELAY = 3.5,   -- seconds after FIRE stage begins before discharging
+                   -- (lands the beam on the ignition blast; 0 = instant)
 }
 
 ---------------------------------------------------------------
@@ -63,6 +65,7 @@ local lastSeen = -100
 local firing = false
 local fireUntil = 0
 local firedThisSeq = false
+local pendingAt = nil
 
 local function fire(reason)
     if firing then return end
@@ -88,6 +91,11 @@ while true do
             rednet.broadcast({ type = "hello", role = "NODE_LASER" },
                 "scada_hello")
         end
+        -- delayed discharge lands on the ignition blast
+        if pendingAt and os.clock() >= pendingAt then
+            pendingAt = nil
+            fire("ignition sequence (synchronized)")
+        end
         -- pulse expiry
         if firing and os.clock() >= fireUntil then
             firing = false
@@ -108,10 +116,13 @@ while true do
             if b.igniting and stage == "fire" then
                 if not firedThisSeq then
                     firedThisSeq = true
-                    fire("ignition sequence FIRE stage")
+                    pendingAt = os.clock() + CONFIG.DELAY
+                    print(("[%s] FIRE stage detected - discharge in %.1fs"):format(
+                        os.date("%H:%M:%S"), CONFIG.DELAY))
                 end
             elseif not b.igniting then
                 firedThisSeq = false -- re-arm for the next sequence
+                pendingAt = nil
             end
         end
     elseif event == "rednet_message" and c == "scada_actuate" then

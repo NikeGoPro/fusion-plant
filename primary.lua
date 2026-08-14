@@ -253,6 +253,9 @@ local function render()
     if (S.unacked or 0) > 0 and tick % 4 < 2 then
         scr:text(W - 22, 1, " ALM " .. S.unacked .. " ", ui.c.text, ui.c.alarm)
     end
+    if d.battleshort and tick % 2 == 0 then
+        scr:text(W - 40, 1, " BATTLESHORT ", ui.c.text, ui.c.alarm)
+    end
 
     local tk = d.tanks or {}
     local burn = d.injection / 2

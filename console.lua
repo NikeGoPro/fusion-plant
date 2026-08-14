@@ -76,7 +76,9 @@ local function renderRPCP()
         -- status line: gates, injection, runback flag
         scr:text(2, 2, "D:" .. st(V.fvd) .. " T:" .. st(V.fvt), ui.c.text)
         scr:text(12, 2, "INJ " .. d.injection, ui.c.accentDim)
-        if d.runback then scr:text(W - 8, 2, "RUNBACK", ui.c.warn) end
+        if d.runback then scr:text(20, 2, "RB", ui.c.warn) end
+        scr:button(W - 4, 2, W - 1, 2, "BS",
+            d.battleshort and ui.c.alarm or ui.c.line, "battleshort", true)
         local half = math.floor((W - 3) / 2)
         scr:button(2, 3, 1 + half, 5, "IGNITE", ui.c.okDim, "ignite",
             not d.ignited and not S.igniting)
@@ -103,6 +105,9 @@ local function renderRPCP()
             .. "  INJ " .. d.injection .. " mB/t"
             .. (d.runback and "  RUNBACK" or ""),
             d.runback and ui.c.warn or ui.c.text)
+        scr:button(W - 10, 3, W - 1, 3,
+            d.battleshort and "BSHORT ON" or "BSHORT",
+            d.battleshort and ui.c.alarm or ui.c.line, "battleshort", true)
         local bh = math.max(4, math.floor(H * 0.28))
         local mid = math.floor(W / 2)
         scr:button(2, 5, mid - 1, 4 + bh, "IGNITE", ui.c.okDim, "ignite",
