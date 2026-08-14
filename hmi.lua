@@ -76,7 +76,7 @@ end
 
 local hist = { plasma = {}, case = {}, prod = {}, flow = {} }
 local telemetry = {}  -- node name -> { t, turbine, tank, readings }
-local TELEM_FRESH = 3 -- seconds
+local TELEM_FRESH = 5 -- seconds (ride through server lag without flapping LIVE)
 local lastSentInj = nil    -- last injection demand pushed to the reactor
 local tankPrev = {}        -- D/T level history for computed production
 local rxWasIgnited = false -- rising-edge detect for already-burning reactor
@@ -152,6 +152,9 @@ local ALARM_DEFS = {
         return worst end},
     {id = "LOI", label = "LOSS OF INDICATION", f = function()
         for _ in pairs(loiList) do return "warn" end end},
+    {id = "MTX_HI", label = "IND MATRIX HI",   f = function(d)
+        local e = d.matrix and d.matrix.energy or 0
+        if e > 0.97 then return "alarm" elseif e > 0.90 then return "warn" end end},
     {id = "TPROD", label = "T PROD MARGIN LO", f = function(d)
         if d.ignited and (d.prodT or 99) < d.injection / 2 then return "warn" end end},
     {id = "SCRAM",   label = "REACTOR SCRAM",   f = function() end}, -- event-latched
@@ -226,6 +229,26 @@ local function valveTick()
     local inj = 0
     if gatesOpen then
         inj = math.floor(V.fcv.pos / 100 * 49 + 0.5) * 2
+        if DATA.ignited and inj < 2 then inj = 2 end -- FCV low-limit stop
+    end
+    -- AUTOMATIC RUNBACK: allowable injection follows online turbine
+    -- capacity (78 mB/t of injection per max MTG). Isolating a turbine
+    -- at the SPCP throttles the reactor to what the lineup can carry.
+    local nOn = 0
+    for _, t in ipairs(DATA.turbines) do
+        if t.online then nOn = nOn + 1 end
+    end
+    local permInj = math.min(98, math.floor(nOn * 78 / 2) * 2)
+    if inj > permInj then
+        if not DATA.runback then
+            logEvent("AUTO RUNBACK - PERM INJ " .. permInj .. " mB/t",
+                ui.c.warn)
+        end
+        DATA.runback = true
+        inj = permInj
+    elseif DATA.runback then
+        DATA.runback = false
+        logEvent("RUNBACK CLEARED", ui.c.okDim)
     end
     if DATA.ignited and inj == 0 and DATA.injection > 0 and not DATA.rxLive then
         DATA.ignited = false
@@ -260,7 +283,11 @@ local function mergeTelemetry()
             t.steamPct = tb.steamPct or 0
             t.buffer = tb.energyPct or 0
             t.mode = tostring(tb.dump or "?"):gsub("DUMPING_EXCESS", "DUMP_EXC")
-            if tel.tank and tel.tank.pct then t.water = tel.tank.pct end
+            if tel.tank and tel.tank.pct then
+                t.water = tel.tank.pct
+            else
+                t.water = nil -- hot well not built/instrumented yet
+            end
         else
             t.live = false
         end
@@ -461,7 +488,7 @@ local PAGES = { "CORE", "PARAMS", "STEAM", "ALARMS", "SETUP" }
 local roster = {}
 local paInfo = { n = 0, t = -100 }
 local VERSION = "2026.08.12-1"
-local STALE_S = 8            -- seconds without heartbeat = link lost
+local STALE_S = 15           -- seconds without heartbeat = link lost (debounced vs lag spikes)
 
 -- nodes remembered across reboots so disconnects are detected, not forgotten
 local knownNodes = {}
@@ -550,6 +577,9 @@ local function drawChrome()
     scr:text(19, by, ts, tc, ui.c.panel)
     scr:text(26, by, ("FCV %3d%%   INJ %d mB/t"):format(V.fcv.pos, DATA.injection),
         ui.c.text, ui.c.panel)
+    if DATA.runback then
+        scr:text(50, by, "RUNBACK", ui.c.warn, ui.c.panel)
+    end
     local bw = math.floor(W * 0.08)
     scr:button(3, by + 1, 3 + bw, by + 2, "FV-D", ui.c.line, "fvd", true)
     scr:button(5 + bw, by + 1, 5 + 2 * bw, by + 2, "FV-T", ui.c.line, "fvt", true)
@@ -783,8 +813,12 @@ local function renderSteam()
         scr:text(cols[5], y, ui.pct(t.steamPct), ui.c.text, ui.c.panel)
         scr:text(cols[6], y, ui.pct(t.buffer), ui.c.text, ui.c.panel)
         scr:text(cols[7], y, t.mode, ui.c.dim, ui.c.panel)
-        scr:bandBar(cols[8], y, 22, t.water or 0, 0.40, 0.70)
-        scr:text(cols[8] + 24, y, ui.pct(t.water or 0), ui.c.text, ui.c.panel)
+        if t.water == nil then
+            scr:text(cols[8], y, "NO INSTR (hot well pending)", ui.c.dim, ui.c.panel)
+        else
+            scr:bandBar(cols[8], y, 22, t.water, 0.40, 0.70)
+            scr:text(cols[8] + 24, y, ui.pct(t.water), ui.c.text, ui.c.panel)
+        end
         -- isolate/restore touch button per unit
         scr:button(W - 16, y, W - 6, y, t.online and "ISOLATE" or "RESTORE",
             t.online and ui.c.warnDim or ui.c.okDim, "tb:" .. i, true)
@@ -1222,10 +1256,11 @@ local function handleAction(action)
             v.demand > 50 and ui.c.okDim or ui.c.warn)
         ui.beep(v.demand > 50 and 12 or 6)
     elseif action == "fcvUp" or action == "injUp" then
-        DATA.valves.fcv.demand = clamp(DATA.valves.fcv.demand + 5, 0, 100)
+        -- one throttle step = one injection step = 2 mB/t (49 steps to 98)
+        DATA.valves.fcv.demand = clamp(DATA.valves.fcv.demand + 100 / 49, 0, 100)
         ui.beep(12)
     elseif action == "fcvDown" or action == "injDown" then
-        DATA.valves.fcv.demand = clamp(DATA.valves.fcv.demand - 5, 0, 100)
+        DATA.valves.fcv.demand = clamp(DATA.valves.fcv.demand - 100 / 49, 0, 100)
         ui.beep(8)
     end
 end
