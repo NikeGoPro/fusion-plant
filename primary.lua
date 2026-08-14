@@ -209,7 +209,7 @@ local function lineV(x, y1, y2, colour, flowing)
     end
 end
 
-local function tankBox(x1, y1, name, frac, colour)
+local function tankBox(x1, y1, name, frac, colour, cap)
     local x2, y2 = x1 + 28, y1 + 4
     scr:fill(x1, y1, x2, y2, ui.c.panel)
     scr:fill(x1, y1, x2, y1, colour)
@@ -218,6 +218,10 @@ local function tankBox(x1, y1, name, frac, colour)
     local f = math.floor((x2 - x1 - 3) * (frac or 0) + 0.5)
     if f > 0 then scr:fill(x1 + 2, y1 + 2, x1 + 1 + f, y1 + 2, colour) end
     scr:text(x1 + 2, y1 + 3, ui.pct(frac or 0), ui.c.text, ui.c.panel)
+    if cap then
+        local amt = ui.si((frac or 0) * cap, "mB")
+        scr:text(x2 - #amt - 1, y1 + 3, amt, colour, ui.c.panel)
+    end
     return y2
 end
 
@@ -268,17 +272,18 @@ local function render()
             scr:loiBox(4, ty2 + 2, 24, "LOI")
         end
     else
-        tankBox(2, 5,  "LIQ LITHIUM", tk.li, ui.c.plasmaDim)
-        tankBox(2, 11, "HEAVY WATER", tk.hw, ui.c.accentDim)
-        tankBox(2, 17, "WATER STG",   tk.stor, ui.c.water)
-        tankBox(2, 23, "DEUTERIUM",   d.deut, ui.c.accent)
-        tankBox(2, 29, "TRITIUM",     d.trit, ui.c.ok)
+        local cp = d.tankCaps or {}
+        tankBox(2, 5,  "LIQ LITHIUM", tk.li, ui.c.plasmaDim, cp.li)
+        tankBox(2, 11, "HEAVY WATER", tk.hw, ui.c.accentDim, cp.hw)
+        tankBox(2, 17, "WATER STG",   tk.stor, ui.c.water, cp.stor)
+        tankBox(2, 23, "DEUTERIUM",   d.deut, ui.c.accent, cp.deut)
+        tankBox(2, 29, "TRITIUM",     d.trit, ui.c.ok, cp.trit)
     end
 
     ---------------------------------------------------------
     -- production vs burn margins
     ---------------------------------------------------------
-    scr:panel(34, 5, 62, 20, "PRODUCTION / BURN")
+    scr:panel(34, 5, 62, 19, "PRODUCTION / BURN")
     local pD, pT = d.prodD or 0, d.prodT or 0
     if fuelLoi then pD, pT = nil, nil end
     local mD = pD and (pD - burn) or nil
@@ -303,8 +308,20 @@ local function render()
         scr:text(36, 16, "MARG " .. string.format("%+5.1f", mT),
             mT >= 0 and ui.c.ok or ui.c.alarm, ui.c.panel)
     end
+    if d.dtBurn then
+        scr:text(48, 7, "D-T FEED", ui.c.plasma, ui.c.panel)
+        scr:text(48, 8, ("%6.1f"):format(d.dtBurn), ui.c.white or colors.white,
+            ui.c.panel)
+        scr:text(48, 9, "mB/t", ui.c.dim, ui.c.panel)
+        scr:text(48, 10, "MEASURED", ui.c.accentDim, ui.c.panel)
+    end
     scr:text(36, 18, "mB/t", ui.c.dim, ui.c.panel)
 
+    -- makeup water from storage tank (drawn first: passes BEHIND fuel lines)
+    lineH(31, 60, 21, ui.c.water, d.ignited)
+    lineV(60, 21, 40, ui.c.water, false)
+    lineH(60, 75, 40, ui.c.water, d.ignited)
+    scr:text(33, 20, "MAKEUP / FEED", ui.c.water)
     ---------------------------------------------------------
     -- fuel lines: D/T tanks -> FV valves -> FCV -> core
     ---------------------------------------------------------
@@ -315,15 +332,15 @@ local function render()
     -- from D tank (y=25) and T tank (y=31)
     lineH(31, 66, 25, ui.c.accent, fueling and fvdOpen)
     valveH(50, 25, "FV-D", fvdOpen, V.fvd and V.fvd.pos)
-    inset(56, 24, 9, burn .. "mB/t")
+    inset(33, 24, 11, burn .. " mB/t")
     lineH(31, 66, 31, ui.c.ok, fueling and fvtOpen)
     valveH(50, 31, "FV-T", fvtOpen, V.fvt and V.fvt.pos)
-    inset(56, 30, 9, burn .. "mB/t")
+    inset(33, 30, 11, burn .. " mB/t")
     lineV(66, 25, 31, ui.c.okDim, false)
-    lineH(66, 74, 28, ui.c.okDim, fueling)
+    lineH(66, 76, 28, ui.c.okDim, fueling)
     local fcvOpen = V.fcv and V.fcv.pos and V.fcv.pos > 1
     valveH(70, 28, "FCV-1", fcvOpen, V.fcv and V.fcv.pos)
-    inset(56, 34, 18, "INJ " .. d.injection .. " mB/t")
+    inset(60, 31, 14, "INJ " .. d.injection .. " mB/t")
 
     ---------------------------------------------------------
     -- core (center-right) + makeup water
@@ -360,11 +377,6 @@ local function render()
         scr:center(cx1, cx2, cy2 - 1, "PLASMA " .. ui.si(d.plasmaTemp, "K")
             .. "  CASE " .. ui.si(d.caseTemp, "K"), ui.c.accentDim, ui.c.panel)
     end
-    -- makeup water from storage tank
-    lineH(31, 60, 21, ui.c.water, d.ignited)
-    lineV(60, 21, 40, ui.c.water, false)
-    lineH(60, cx1, 40, ui.c.water, d.ignited)
-    scr:text(33, 20, "MAKEUP / FEED", ui.c.water)
     -- steam off to the right wall
     lineH(cx2, W - 4, 24, ui.c.steam, d.ignited and d.steamFlow > 100)
     scr:text(W - 30, 23, "STEAM " .. ui.si(d.steamFlow, "mB/t"), ui.c.steam)
@@ -389,7 +401,7 @@ local function render()
         { "RT-1 FUEL FEED",   st.DT_LO or st.TPROD },
         { "RT-2 RX WATER",    st.WTR_LO },
         { "RT-3 STEAM PRESS", st.STM_HI },
-        { "RT-4 HEAT SINK",   st.TB_TRIP or st.FLOW_LO },
+        { "RT-4 HEAT SINK",   st.TB_TRIP or st.FLOW_LO or st.MTX_HI },
         { "RT-5 CASE TEMP",   st.CST_HI },
         { "RT-6 SG LEVEL",    st.SG_LVL },
     }
@@ -423,13 +435,28 @@ local function render()
         d.hohlraum and ui.c.ok or ui.c.alarm, ui.c.panel)
 
     ---------------------------------------------------------
+    -- induction matrix (full matrix = turbines stop = steam backup)
+    ---------------------------------------------------------
+    scr:panel(116, 33, W - 1, 43, "INDUCTION MATRIX")
+    local m = d.matrix or {}
+    local mc = m.energy or 0
+    local mcol = ui.c.caution
+    if mc > 0.97 then mcol = ui.c.alarm
+    elseif mc > 0.90 then mcol = ui.c.warn end
+    scr:gaugeH(118, 35, W - 121, "CHARGE", mc, ui.pct(mc), mcol)
+    scr:text(118, 38, "IN  " .. ui.si(m.input or 0, "FE/t"), ui.c.ok, ui.c.panel)
+    scr:text(118, 39, "OUT " .. ui.si(m.output or 0, "FE/t"), ui.c.warn, ui.c.panel)
+    scr:text(118, 41, "FULL MATRIX = TB TRIP / STEAM BACKUP",
+        mc > 0.90 and ui.c.alarm or ui.c.dim, ui.c.panel)
+
+    ---------------------------------------------------------
     -- active alarm strip
     ---------------------------------------------------------
-    scr:panel(2, H - 18, W - 1, H - 3, "ACTIVE ALARMS / EVENTS")
-    local y = H - 16
+    scr:panel(2, H - 14, W - 1, H - 3, "ACTIVE ALARMS / EVENTS")
+    local y = H - 12
     if S.alarms and #S.alarms > 0 then
         for _, a in ipairs(S.alarms) do
-            if y > H - 11 then break end
+            if y > H - 9 then break end
             local c2 = a.state == "alarm" and (a.acked and ui.c.warn or ui.c.alarm)
                 or ui.c.warn
             scr:text(4, y, a.label .. " [" .. a.state:upper() .. "]"
@@ -440,9 +467,9 @@ local function render()
         scr:text(4, y, "NO ACTIVE ALARMS", ui.c.okDim, ui.c.panel)
         y = y + 1
     end
-    y = H - 10
+    y = H - 8
     scr:fill(4, y - 1, W - 4, y - 1, ui.c.line)
-    for i = 1, math.min(#(S.log or {}), 6) do
+    for i = 1, math.min(#(S.log or {}), 5) do
         local e = S.log[i]
         scr:text(4, y, e.time .. "  " .. e.text, e.colour or ui.c.dim, ui.c.panel)
         y = y + 1

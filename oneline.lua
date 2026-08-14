@@ -259,9 +259,13 @@ local function render()
             scr:text(ix + 40, by + 4, ui.pct(t.buffer), ui.c.text)
             scr:text(ix + 48, by + 4, t.mode or "", ui.c.dim)
             scr:text(ix, by + 6, "SG LEVEL", ui.c.accentDim)
-            scr:bandBar(ix + 12, by + 6, 34, t.water or 0, 0.40, 0.70)
-            scr:text(ix + 48, by + 6, ui.pct(t.water or 0),
-                (t.water or 0) < 0.25 and ui.c.alarm or ui.c.text)
+            if t.water == nil then
+                scr:loiBox(ix + 12, by + 6, 34, "NO HOT WELL INSTRUMENT")
+            else
+                scr:bandBar(ix + 12, by + 6, 34, t.water, 0.40, 0.70)
+                scr:text(ix + 48, by + 6, ui.pct(t.water),
+                    t.water < 0.25 and ui.c.alarm or ui.c.text)
+            end
             scr:text(ix, by + 8, "HOT WELL RETURN", ui.c.accentDim)
             scr:text(ix + 17, by + 8,
                 open and ui.si(t.flow, "mB/t") or "ISOLATED",

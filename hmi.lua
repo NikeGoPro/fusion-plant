@@ -311,10 +311,10 @@ local function mergeTelemetry()
                 DATA.ignited = e.isIgnited == true
                 if e.getInjectionRate then DATA.injection = e.getInjectionRate end
                 if e.getWaterFilledPercentage then
-                    DATA.water = e.getWaterFilledPercentage
+                    DATA.water = ui.sane(e.getWaterFilledPercentage)
                 end
                 if e.getSteamFilledPercentage then
-                    DATA.steam = e.getSteamFilledPercentage
+                    DATA.steam = ui.sane(e.getSteamFilledPercentage)
                 end
                 -- Mekanism reports Joules; FE = J * 0.4
                 if e.getProductionRate then
@@ -351,6 +351,7 @@ local function mergeTelemetry()
             local key
             if nm:find("deuterium") then key = "deut"
             elseif nm:find("tritium") then key = "trit"
+            elseif nm:find("fusion") or nm:find("d_t") then key = "dtf"
             elseif nm:find("lithium") then key = "li"
             elseif nm:find("heavy") then key = "hw"
             elseif nm:find("water") then key = "stor" end
@@ -363,9 +364,22 @@ local function mergeTelemetry()
                 pct = math.max(0, math.min(1, pct or 0))
                 if key == "deut" then DATA.deut = pct
                 elseif key == "trit" then DATA.trit = pct
+                elseif key == "dtf" then DATA.dtfuel = pct
                 else DATA.tanks[key] = pct end
                 if tk.capacity and tk.capacity > 0 then
                     DATA.tankCaps[key] = tk.capacity
+                end
+                if key == "dtf" and tk.amount then
+                    -- measured D-T feed to the core = supply tank drain rate
+                    local pv = tankPrev.dtf
+                    local now = os.clock()
+                    if not pv then
+                        tankPrev.dtf = { amt = tk.amount, t = now }
+                    elseif now - pv.t >= 5 then
+                        DATA.dtBurn = math.max(0,
+                            (pv.amt - tk.amount) / ((now - pv.t) * 20))
+                        tankPrev.dtf = { amt = tk.amount, t = now }
+                    end
                 end
                 if (key == "deut" or key == "trit") and tk.amount then
                     local pv = tankPrev[key]
@@ -771,7 +785,7 @@ local function renderParams()
     paramRow(c3, y0 + 4, colW, "MATRIX CHARGE", "mc", DATA.matrix.energy, "%",
         {0.05, 0.10, 0.95, 0.99}, fpct)
     scr:text(c3, y0 + 6, "-- HEAT BALANCE --", ui.c.accent)
-    local theo = DATA.ignited and (DATA.injection * 650000) or 1
+    local theo = DATA.ignited and math.max(1, DATA.injection * 650000) or 1
     paramRow(c3, y0 + 7, colW, "THERMAL EFF", "te",
         DATA.production / theo, "%", {0.5, 0.7}, fpct)
     paramRow(c3, y0 + 8, colW, "LOSS FRACTION", "lf",

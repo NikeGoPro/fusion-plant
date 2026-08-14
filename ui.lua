@@ -205,6 +205,7 @@ function Screen:panel(x1, y1, x2, y2, title)
 end
 
 function Screen:gaugeH(x, y, w, label, frac, readout, colour)
+    frac = ui.sane(frac)
     frac = math.max(0, math.min(1, frac or 0))
     self:text(x, y, label, ui.c.dim, ui.c.panel)
     if readout then
@@ -282,7 +283,7 @@ end
 -- [lo..hi], and a bright level marker coloured by zone (green in band,
 -- amber high, red low). Classic SG level program display.
 function Screen:bandBar(x, y, w, frac, lo, hi)
-    frac = math.max(0, math.min(1, frac or 0))
+    frac = math.max(0, math.min(1, ui.sane(frac)))
     self:fill(x, y, x + w - 1, y, ui.c.bg)
     local bx1 = x + math.floor(w * (lo or 0.4))
     local bx2 = x + math.max(math.floor(w * (hi or 0.7)) - 1, 0)
@@ -318,6 +319,7 @@ end
 -- FORMATTERS
 ---------------------------------------------------------------
 function ui.si(n, unit)
+    n = ui.sane(n)
     unit = unit or ""
     local a = math.abs(n)
     if a >= 1e9 then return string.format("%.2fG%s", n / 1e9, unit)
@@ -326,7 +328,16 @@ function ui.si(n, unit)
     return string.format("%.0f%s", n, unit)
 end
 
+-- real peripherals can return NaN/inf (e.g. 0-capacity tank pct);
+-- every display formatter sanitizes its input
+function ui.sane(n)
+    n = tonumber(n) or 0
+    if n ~= n or n == math.huge or n == -math.huge then return 0 end
+    return n
+end
+
 function ui.pct(frac)
+    frac = ui.sane(frac)
     return string.format("%3d%%", math.floor((frac or 0) * 100 + 0.5))
 end
 

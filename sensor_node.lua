@@ -128,7 +128,14 @@ local function collect()
                             got = true
                         end
                     end
-                    if got then packet.readings[name] = entry end
+                    if got then
+                        packet.readings[name] = entry
+                    else
+                        -- connected but unreadable: report it loudly so a
+                        -- wrong-block binding is diagnosed, not silent
+                        packet.unreadable = packet.unreadable or {}
+                        packet.unreadable[name] = ty
+                    end
                 end
             end
         end
@@ -171,9 +178,22 @@ while true do
                 local c = 0
                 for _ in pairs(packet.readings) do c = c + 1 end
                 if c > 0 then bits[#bits + 1] = c .. " other" end
+                if packet.unreadable then
+                    for nm, ty in pairs(packet.unreadable) do
+                        print(("!! %s [%s] connected but NO readable values"):format(
+                            nm, ty))
+                        local ms = peripheral.getMethods(nm) or {}
+                        table.sort(ms)
+                        print("   methods: " .. table.concat(ms, ", "):sub(1, 200))
+                        if tostring(ty):lower():find("controller") then
+                            print("   >> controllers may not expose data - move the")
+                            print("   >> wired modem to a REACTOR PORT instead")
+                        end
+                    end
+                end
                 print(("[%s] %s"):format(os.date("%H:%M:%S"),
                     #bits > 0 and table.concat(bits, ", ")
-                    or "no peripherals visible"))
+                    or "no readable peripherals"))
             end
         end
         nextCast = os.clock() + CONFIG.PERIOD
