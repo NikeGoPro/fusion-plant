@@ -221,7 +221,7 @@ local function valveTick()
     if gatesOpen then
         inj = math.floor(V.fcv.pos / 100 * 49 + 0.5) * 2
     end
-    if DATA.ignited and inj == 0 and DATA.injection > 0 then
+    if DATA.ignited and inj == 0 and DATA.injection > 0 and not DATA.rxLive then
         DATA.ignited = false
         raiseAlarm("FLAMEOUT", "RX FLAMEOUT - FUEL ISOLATED", "alarm")
         paAmbient(nil)
@@ -257,6 +257,34 @@ local function mergeTelemetry()
         local total = 0
         for _, t in ipairs(DATA.turbines) do total = total + (t.flow or 0) end
         DATA.steamFlow = total
+    end
+    -- reactor: any reachable port carries the whole multiblock's data
+    DATA.rxLive = false
+    local rt = telemetry["REACTOR"]
+    if rt and os.clock() - rt.t < TELEM_FRESH and rt.readings then
+        for _, e in pairs(rt.readings) do
+            if e.getPlasmaTemperature ~= nil then
+                DATA.rxLive = true
+                DATA.plasmaTemp = e.getPlasmaTemperature
+                DATA.caseTemp = e.getCaseTemperature or DATA.caseTemp
+                DATA.ignited = e.isIgnited == true
+                if e.getInjectionRate then DATA.injection = e.getInjectionRate end
+                if e.getWaterFilledPercentage then
+                    DATA.water = e.getWaterFilledPercentage
+                end
+                if e.getSteamFilledPercentage then
+                    DATA.steam = e.getSteamFilledPercentage
+                end
+                -- Mekanism reports Joules; FE = J * 0.4
+                if e.getProductionRate then
+                    DATA.production = e.getProductionRate * 0.4
+                end
+                if e.getPassiveGeneration then
+                    DATA.passiveGen = e.getPassiveGeneration * 0.4
+                end
+                break
+            end
+        end
     end
 end
 
@@ -379,7 +407,9 @@ end
 -- sensors the plant EXPECTS: never-seen counts as loss of indication.
 -- extend this list as the plant grows (TANKS, FUEL, MATRIX, TB3...).
 local EXPECTED_SENSORS = {
-    "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_FUEL",
+    "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS",
+    -- (no FUEL node: production rates get computed from tank deltas
+    --  once the TANKS node is bound)
 }
 for _, r in ipairs(EXPECTED_SENSORS) do knownNodes[r] = true end
 

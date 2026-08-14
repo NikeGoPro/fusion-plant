@@ -103,10 +103,16 @@ local function collect()
                 if tyl:find("turbine") and not packet.turbine then
                     packet.turbine = readTurbine(p)
                     packet.turbine.via = name
-                elseif (tyl:find("dynamic") or tyl:find("tank"))
-                    and not packet.tank then
-                    packet.tank = readTank(p)
-                    if packet.tank then packet.tank.via = name end
+                elseif tyl:find("dynamic") or tyl:find("tank") then
+                    local tk = readTank(p)
+                    if tk then
+                        packet.tanks = packet.tanks or {}
+                        packet.tanks[name] = tk
+                        if not packet.tank then
+                            packet.tank = tk        -- first tank = hot well
+                            packet.tank.via = name  -- (TB-node convention)
+                        end
+                    end
                 else
                     local entry = { type = ty }
                     local got = false
