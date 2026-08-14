@@ -72,6 +72,8 @@ for i = 1, 2 do
 end
 
 local hist = { plasma = {}, case = {}, prod = {}, flow = {} }
+local telemetry = {}  -- node name -> { t, turbine, tank, readings }
+local TELEM_FRESH = 3 -- seconds
 local prev = {}          -- for trend arrows
 local tick, flash = 0, false
 local page = "CORE"
@@ -380,9 +382,6 @@ local EXPECTED_SENSORS = {
     "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_FUEL",
 }
 for _, r in ipairs(EXPECTED_SENSORS) do knownNodes[r] = true end
-
-local telemetry = {}  -- node name -> { t, turbine, tank, readings }
-local TELEM_FRESH = 3 -- seconds
 
 local nodeUp = {}   -- role -> bool (last evaluated link state)
 

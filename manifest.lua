@@ -1,5 +1,5 @@
 return {
-    version = 4,
+    version = 5,
     files = {
         ["ui.lua"] = "ui.lua",
         ["hmi.lua"] = "hmi.lua",
