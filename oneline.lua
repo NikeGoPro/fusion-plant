@@ -231,6 +231,9 @@ local function render()
             scr:text(L.boxX1 + 2, by, "MTG-" .. i, ui.c.text)
             scr:fill(L.boxX1 + 10, by, L.boxX1 + 11 + #status2, by, sc2)
             scr:text(L.boxX1 + 11, by, status2, ui.c.bg, sc2)
+            if t.live then
+                scr:text(L.boxX1 + 13 + #status2, by, "LIVE", ui.c.accent)
+            end
             local ix = L.boxX1 + 2
             if tbLoi then
                 scr:text(ix, by + 2, "STEAM FLOW", ui.c.accentDim)

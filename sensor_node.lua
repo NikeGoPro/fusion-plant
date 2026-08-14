@@ -1,22 +1,19 @@
 --[[
-sensor_node.lua -- plant telemetry node (v2)
-One per data-collection computer. Attach peripherals (turbine valve,
-reactor port / logic adapter, dynamic tank valve, induction port) via
-wired modems, plus an ender/wireless modem (or the wired trunk) for
-rednet back to the control room.
+sensor_node.lua -- plant telemetry node (v3, turbine-grade)
+One computer per instrumented location. This node:
+  - opens EVERY attached modem (wired + wireless/ender) so telemetry
+    always reaches the control room regardless of which network is which
+  - heartbeats as NODE_<name> on "scada_hello" (SETUP roster + LOI)
+  - broadcasts on "scada_sensor" twice a second:
+      * a distilled TURBINE summary if a turbine valve is reachable
+      * a distilled TANK summary if a dynamic tank valve is reachable
+      * raw readings from everything else it can see
+  - survives unformed multiblocks, missing peripherals, and chunk
+    weirdness without crashing (everything is pcall-guarded)
 
-Set CONFIG.NODE to this node's identity. Suggested names:
-  "REACTOR" - fusion reactor ports / logic adapter
-  "TB1", "TB2" - one per turbine (its valve)
-  "TANKS" - fuel train storage tanks
-  "FUEL" - separators / SNA production instrumentation
-
-The node:
-  - announces itself on "scada_hello" as NODE_<name> (feeds the master's
-    SETUP roster + LOI detection)
-  - broadcasts raw readings from every attached peripheral on
-    "scada_sensor" twice a second
-Rename to startup.lua on the node computer.
+Identity: file "role" on this computer (written by install.lua),
+falling back to CONFIG.NODE. Turbine nodes must be TB1, TB2, ...
+so the master maps them to MTG-1, MTG-2.
 ]]
 
 local CONFIG = {
@@ -24,55 +21,118 @@ local CONFIG = {
     PERIOD = 0.5,
 }
 
--- per-computer node name lives in a local "role" file (e.g. TB1),
--- so fleet updates never reset it.
 if fs.exists("role") then
     local f = fs.open("role", "r")
     CONFIG.NODE = f.readAll():gsub("%s+", "")
     f.close()
 end
 
-local modem = peripheral.find("modem")
-if not modem then error("Sensor node needs a modem", 0) end
-rednet.open(peripheral.getName(modem))
-
--- methods worth trying on anything we find; pcall guards the rest
-local TRY = {
-    "getPlasmaTemperature", "getCaseTemperature", "isIgnited",
-    "getInjectionRate", "getProductionRate", "getPassiveGeneration",
-    "getWater", "getSteam", "getWaterFilledPercentage",
-    "getSteamFilledPercentage", "getDeuterium", "getTritium", "getDTFuel",
-    "getFlowRate", "getLastSteamInputRate", "getMaxFlowRate",
-    "getProductionRate", "getEnergyFilledPercentage", "getDumpingMode",
-    "getFilledPercentage", "getStored", "getCapacity",
-    "getEnergy", "getMaxEnergy", "getLastInput", "getLastOutput",
-}
-
-local function readAll()
-    local out = {}
-    for _, name in ipairs(peripheral.getNames()) do
-        local p = peripheral.wrap(name)
-        if p then
-            local entry = { type = peripheral.getType(name) }
-            local got = false
-            for _, m in ipairs(TRY) do
-                if p[m] then
-                    local ok, v = pcall(p[m])
-                    if ok and (type(v) == "number" or type(v) == "boolean"
-                        or type(v) == "string") then
-                        entry[m] = v
-                        got = true
-                    end
-                end
-            end
-            if got then out[name] = entry end
-        end
+---------------------------------------------------------------
+-- open every modem we have
+---------------------------------------------------------------
+local opened = 0
+for _, name in ipairs(peripheral.getNames()) do
+    if peripheral.getType(name) == "modem" then
+        if not rednet.isOpen(name) then rednet.open(name) end
+        opened = opened + 1
     end
-    return out
+end
+if opened == 0 then
+    error("Sensor node needs at least one modem (wired or ender)", 0)
 end
 
-print(("Sensor node NODE_%s online. Broadcasting every %.1fs."):format(
-    CONFIG.NODE, CONFIG.PERIOD))
+---------------------------------------------------------------
+-- readers
+---------------------------------------------------------------
+local function tryCall(p, method)
+    if type(p[method]) ~= "function" then return nil end
+    local ok, v = pcall(p[method])
+    if ok then return v end
+    return nil
+end
+
+-- distilled turbine summary from a turbine valve
+local function readTurbine(p)
+    local t = {
+        flow      = tryCall(p, "getFlowRate"),
+        lastInput = tryCall(p, "getLastSteamInputRate"),
+        maxFlow   = tryCall(p, "getMaxFlowRate"),
+        prod      = tryCall(p, "getProductionRate"),
+        maxProd   = tryCall(p, "getMaxProduction"),
+        steamPct  = tryCall(p, "getSteamFilledPercentage"),
+        energyPct = tryCall(p, "getEnergyFilledPercentage"),
+        dump      = tryCall(p, "getDumpingMode"),
+        blades    = tryCall(p, "getBlades"),
+        vents     = tryCall(p, "getVents"),
+        condensers = tryCall(p, "getCondensers"),
+        maxWaterOut = tryCall(p, "getMaxWaterOutput"),
+    }
+    t.formed = (t.flow ~= nil or t.steamPct ~= nil)
+    if type(t.dump) == "table" then t.dump = tostring(t.dump[1] or "?") end
+    return t
+end
+
+-- distilled tank summary from a dynamic tank valve (hot well etc.)
+local function readTank(p)
+    local pct = tryCall(p, "getFilledPercentage")
+    if pct == nil then return nil end
+    return {
+        pct = pct,
+        capacity = tryCall(p, "getTankCapacity") or tryCall(p, "getCapacity"),
+    }
+end
+
+local GENERIC_TRY = {
+    "getPlasmaTemperature", "getCaseTemperature", "isIgnited",
+    "getInjectionRate", "getProductionRate", "getPassiveGeneration",
+    "getWaterFilledPercentage", "getSteamFilledPercentage",
+    "getDeuteriumFilledPercentage", "getTritiumFilledPercentage",
+    "getDTFuelFilledPercentage", "getEnergyFilledPercentage",
+    "getFilledPercentage", "getEnergy", "getMaxEnergy",
+    "getLastInput", "getLastOutput",
+}
+
+local function collect()
+    local packet = { type = "telemetry", node = CONFIG.NODE, readings = {} }
+    for _, name in ipairs(peripheral.getNames()) do
+        local ty = peripheral.getType(name)
+        if ty ~= "modem" then
+            local p = peripheral.wrap(name)
+            if p then
+                local tyl = tostring(ty):lower()
+                if tyl:find("turbine") and not packet.turbine then
+                    packet.turbine = readTurbine(p)
+                    packet.turbine.via = name
+                elseif (tyl:find("dynamic") or tyl:find("tank"))
+                    and not packet.tank then
+                    packet.tank = readTank(p)
+                    if packet.tank then packet.tank.via = name end
+                else
+                    local entry = { type = ty }
+                    local got = false
+                    for _, m in ipairs(GENERIC_TRY) do
+                        local v = tryCall(p, m)
+                        if v ~= nil and (type(v) == "number"
+                            or type(v) == "boolean" or type(v) == "string") then
+                            entry[m] = v
+                            got = true
+                        end
+                    end
+                    if got then packet.readings[name] = entry end
+                end
+            end
+        end
+    end
+    return packet
+end
+
+---------------------------------------------------------------
+-- main
+---------------------------------------------------------------
+print(("Sensor node NODE_%s online (%d modem(s) open)."):format(
+    CONFIG.NODE, opened))
+print("Broadcasting every " .. CONFIG.PERIOD .. "s. Ctrl+T to stop.")
+
 local n = 0
 while true do
     n = n + 1
@@ -80,14 +140,28 @@ while true do
         rednet.broadcast({ type = "hello", role = "NODE_" .. CONFIG.NODE },
             "scada_hello")
     end
-    local readings = readAll()
-    rednet.broadcast({ type = "telemetry", node = CONFIG.NODE,
-        readings = readings }, "scada_sensor")
-    if n % 20 == 0 then
-        local c = 0
-        for _ in pairs(readings) do c = c + 1 end
-        print(("[%s] %d peripheral(s) reporting"):format(
-            os.date("%H:%M:%S"), c))
+    local ok, packet = pcall(collect)
+    if ok then
+        rednet.broadcast(packet, "scada_sensor")
+        if n % 20 == 0 then
+            local bits = {}
+            if packet.turbine then
+                bits[#bits + 1] = packet.turbine.formed
+                    and ("turbine OK flow=" .. tostring(
+                        packet.turbine.lastInput or packet.turbine.flow or 0))
+                    or "turbine UNFORMED"
+            end
+            if packet.tank then
+                bits[#bits + 1] = ("tank %.0f%%"):format(
+                    (packet.tank.pct or 0) * 100)
+            end
+            local c = 0
+            for _ in pairs(packet.readings) do c = c + 1 end
+            if c > 0 then bits[#bits + 1] = c .. " other" end
+            print(("[%s] %s"):format(os.date("%H:%M:%S"),
+                #bits > 0 and table.concat(bits, ", ")
+                or "no peripherals visible"))
+        end
     end
     sleep(CONFIG.PERIOD)
 end

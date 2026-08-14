@@ -21,10 +21,9 @@ local scr = ui.attach(nil, CONFIG.scale)
 ---------------------------------------------------------------
 local PA_PROTO = "scada_pa"
 local paReady = false
-do
-    local m = peripheral.find("modem")
-    if m then
-        rednet.open(peripheral.getName(m))
+for _, name in ipairs(peripheral.getNames()) do
+    if peripheral.getType(name) == "modem" then
+        if not rednet.isOpen(name) then rednet.open(name) end
         paReady = true
     end
 end
@@ -231,9 +230,41 @@ local function valveTick()
     -- pcall(reactor.setInjectionRate, inj)
 end
 
+-- overlay live sensor telemetry onto plant data (real beats sim)
+local function mergeTelemetry()
+    local anyLive = false
+    for i, t in ipairs(DATA.turbines) do
+        local tel = telemetry["TB" .. i]
+        if tel and os.clock() - tel.t < TELEM_FRESH and tel.turbine
+            and tel.turbine.formed then
+            local tb = tel.turbine
+            t.live = true
+            anyLive = true
+            t.flow = tb.lastInput or tb.flow or 0
+            -- Mekanism reports Joules; FE = J * 0.4 (verify vs your configs)
+            t.prod = (tb.prod or 0) * 0.4
+            t.steamPct = tb.steamPct or 0
+            t.buffer = tb.energyPct or 0
+            t.mode = tostring(tb.dump or "?"):gsub("DUMPING_EXCESS", "DUMP_EXC")
+            if tel.tank and tel.tank.pct then t.water = tel.tank.pct end
+        else
+            t.live = false
+        end
+    end
+    if anyLive then
+        local total = 0
+        for _, t in ipairs(DATA.turbines) do total = total + (t.flow or 0) end
+        DATA.steamFlow = total
+    end
+end
+
 local function readData()
     valveTick()
-    if not CONFIG.SIM then return end -- real peripherals wire in here later
+    if not CONFIG.SIM then
+        mergeTelemetry()
+        evalAlarms()
+        return
+    end -- real peripherals wire in here later
     if DATA.ignited then
         DATA.plasmaTemp = approach(DATA.plasmaTemp, 120e6 + math.random(-2e6, 2e6), 0.07)
         DATA.caseTemp   = approach(DATA.caseTemp, 40e6 + math.random(-8e5, 8e5), 0.07)
@@ -295,6 +326,7 @@ local function readData()
         end
         for i = 1, 4 do DATA.lasers[i] = clamp(DATA.lasers[i] + 0.01, 0, 1) end
     end
+    mergeTelemetry()
     push(hist.plasma, DATA.plasmaTemp); push(hist.case, DATA.caseTemp)
     push(hist.prod, DATA.production);   push(hist.flow, DATA.steamFlow)
     evalAlarms()
@@ -348,6 +380,9 @@ local EXPECTED_SENSORS = {
     "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_FUEL",
 }
 for _, r in ipairs(EXPECTED_SENSORS) do knownNodes[r] = true end
+
+local telemetry = {}  -- node name -> { t, turbine, tank, readings }
+local TELEM_FRESH = 3 -- seconds
 
 local nodeUp = {}   -- role -> bool (last evaluated link state)
 
@@ -1125,6 +1160,11 @@ while true do
                 saveKnown()
                 logEvent(x.role .. " REGISTERED", ui.c.accentDim)
             end
+        end
+    elseif event == "rednet_message" and y == "scada_sensor" then
+        if type(x) == "table" and x.type == "telemetry" and x.node then
+            telemetry[x.node] = { t = os.clock(), turbine = x.turbine,
+                tank = x.tank, readings = x.readings }
         end
     elseif event == "rednet_message" and y == "scada_pa" then
         if type(x) == "table" and x.type == "sounds" then
