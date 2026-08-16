@@ -106,6 +106,30 @@ local lastSentInj = nil    -- last injection demand pushed to the reactor
 local tripLatched = false  -- RPS protective action one-shot
 local prevRed = false
 local tankPrev = {}        -- D/T level history for computed production
+
+-- nodes remembered across reboots so disconnects are detected, not forgotten
+local knownNodes = {}
+do
+    if fs.exists("known_nodes") then
+        local f = fs.open("known_nodes", "r")
+        knownNodes = textutils.unserialize(f.readAll()) or {}
+        f.close()
+    end
+end
+local function saveKnown()
+    local f = fs.open("known_nodes", "w")
+    f.write(textutils.serialize(knownNodes))
+    f.close()
+end
+-- sensors the plant EXPECTS: never-seen counts as loss of indication.
+-- extend this list as the plant grows (TANKS, FUEL, MATRIX, TB3...).
+local EXPECTED_SENSORS = {
+    "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_MATRIX",
+    -- (no FUEL node: production rates get computed from tank deltas
+    --  once the TANKS node is bound)
+}
+for _, r in ipairs(EXPECTED_SENSORS) do knownNodes[r] = true end
+
 local rxWasIgnited = false -- rising-edge detect for already-burning reactor
 local prev = {}          -- for trend arrows
 local tick, flash = 0, false
@@ -137,6 +161,7 @@ end
 ---------------------------------------------------------------
 local loiList = {}  -- role -> true while a known node's link is lost
 local scramAt = nil -- when a SCRAM was commanded (for fail-to-scram watch)
+local chInvalid = {}    -- param -> true when reading failed plausibility
 
 local ALARM_DEFS = {
     {id = "PLT_HI",  label = "PLASMA TEMP HI",  sustain = 1, f = function(d)
@@ -201,7 +226,6 @@ local ALARM_DEFS = {
 
 local alarmState = {}   -- id -> {state="warn"/"alarm", acked=bool}
 local alarmPend = {}    -- id -> os.clock when condition first seen (sustain)
-local chInvalid = {}    -- param -> true when reading failed plausibility
 local alarmLog = {}     -- {time, text, colour}
 local firstOut = nil    -- first red alarm since last acknowledge (RPS first-out)
 
@@ -666,29 +690,6 @@ local roster = {}
 local paInfo = { n = 0, t = -100 }
 local VERSION = "2026.08.12-1"
 local STALE_S = 15           -- seconds without heartbeat = link lost (debounced vs lag spikes)
-
--- nodes remembered across reboots so disconnects are detected, not forgotten
-local knownNodes = {}
-do
-    if fs.exists("known_nodes") then
-        local f = fs.open("known_nodes", "r")
-        knownNodes = textutils.unserialize(f.readAll()) or {}
-        f.close()
-    end
-end
-local function saveKnown()
-    local f = fs.open("known_nodes", "w")
-    f.write(textutils.serialize(knownNodes))
-    f.close()
-end
--- sensors the plant EXPECTS: never-seen counts as loss of indication.
--- extend this list as the plant grows (TANKS, FUEL, MATRIX, TB3...).
-local EXPECTED_SENSORS = {
-    "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_MATRIX",
-    -- (no FUEL node: production rates get computed from tank deltas
-    --  once the TANKS node is bound)
-}
-for _, r in ipairs(EXPECTED_SENSORS) do knownNodes[r] = true end
 
 local nodeUp = {}   -- role -> bool (last evaluated link state)
 
