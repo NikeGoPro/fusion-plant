@@ -873,6 +873,7 @@ local function renderCore()
     drawPlasmaField(intensity)
     drawChamber()
     local lh = math.floor((H - 18) / 2)
+    local rx1 = CB.x2 + 2
     local pv, pc = limitVal(DATA.plasmaTemp, DATA.maxPlasma)
     graphPanel(2, 5, CB.sideW, 4 + lh, "PLASMA TEMP", hist.plasma, pv, pc,
         DATA.maxPlasma)
