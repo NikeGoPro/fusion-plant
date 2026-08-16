@@ -20,13 +20,30 @@ local CONFIG = {
 }
 
 local opened = 0
+local seen = {}
+local candidates = { "back", "front", "top", "bottom", "left", "right" }
 for _, name in ipairs(peripheral.getNames()) do
-    if peripheral.getType(name) == "modem" then
-        if not rednet.isOpen(name) then rednet.open(name) end
-        opened = opened + 1
+    candidates[#candidates + 1] = name
+end
+for _, name in ipairs(candidates) do
+    if not seen[name] and peripheral.getType(name) == "modem" then
+        seen[name] = true
+        local ok = pcall(function()
+            if not rednet.isOpen(name) then rednet.open(name) end
+        end)
+        if ok then opened = opened + 1 end
     end
 end
-if opened == 0 then error("Admin needs a modem (ender ideal)", 0) end
+if opened == 0 then
+    print("No modem found. Side scan:")
+    for _, s in ipairs({ "back", "front", "top", "bottom",
+        "left", "right" }) do
+        print("  " .. s .. ": " .. tostring(peripheral.getType(s)))
+    end
+    print("On a pocket: put an ender modem in inventory and run")
+    print("  lua > pocket.equipBack()")
+    error("Admin needs a modem equipped (not just carried)", 0)
+end
 
 local W, H = term.getSize()
 local S, lastState = nil, -100
