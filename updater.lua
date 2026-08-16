@@ -28,6 +28,7 @@ local ROLES = {
     pa      = { "updater.lua", "pa.lua" },
     sensor  = { "updater.lua", "sensor_node.lua" },
     laser   = { "updater.lua", "laser_node.lua" },
+    admin   = { "updater.lua", "admin.lua" },
 }
 
 local role = ({ ... })[1]

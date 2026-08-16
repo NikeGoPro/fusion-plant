@@ -18,12 +18,13 @@ local PROG = {
     hmi = "hmi.lua", primary = "primary.lua", oneline = "oneline.lua",
     viewer = "viewer.lua", console = "console.lua", pa = "pa.lua",
     sensor = "sensor_node.lua", laser = "laser_node.lua",
+    admin = "admin.lua",
 }
 
 local args = { ... }
 local role, sub = args[1], args[2]
 if not role or not PROG[role] then
-    print("usage: install <hmi|primary|oneline|viewer|console|pa|sensor|laser> [sub]")
+    print("usage: install <hmi|primary|oneline|viewer|console|pa|sensor|laser|admin> [sub]")
     print("  console needs RPCP or SPCP; sensor needs a node name (TB1...)")
     return
 end
