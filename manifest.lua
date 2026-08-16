@@ -2,7 +2,7 @@
 -- verify[] markers: a string that MUST exist in the current file;
 -- protects against stale CDN copies being installed as "updated".
 return {
-    version = 35,
+    version = 36,
     files = {
         ["updater.lua"] = "updater.lua",
         ["ui.lua"] = "ui.lua",

@@ -125,6 +125,7 @@ end
 -- extend this list as the plant grows (TANKS, FUEL, MATRIX, TB3...).
 local EXPECTED_SENSORS = {
     "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_MATRIX",
+    "NODE_HW1", "NODE_HW2",
     -- (no FUEL node: production rates get computed from tank deltas
     --  once the TANKS node is bound)
 }
@@ -390,8 +391,17 @@ local function mergeTelemetry()
             t.steamPct = tb.steamPct or 0
             t.buffer = tb.energyPct or 0
             t.mode = tostring(tb.dump or "?"):gsub("DUMPING_EXCESS", "DUMP_EXC")
-            if tel.tank and tel.tank.pct then
-                t.water = tel.tank.pct
+            -- hot well level: TB-local tank first, else the unit's
+            -- dedicated HW<i> node (remote hot well location)
+            local hw = tel.tank
+            if not (hw and hw.pct) then
+                local hwt = telemetry["HW" .. i]
+                if hwt and os.clock() - hwt.t < TELEM_FRESH then
+                    hw = hwt.tank
+                end
+            end
+            if hw and hw.pct then
+                t.water = math.max(0, math.min(1, ui.sane(hw.pct)))
             else
                 t.water = nil -- hot well not built/instrumented yet
             end
