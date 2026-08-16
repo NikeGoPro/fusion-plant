@@ -28,6 +28,7 @@ if not modem then error("Console needs a modem on the plant network", 0) end
 rednet.open(peripheral.getName(modem))
 
 local S, lastSeen = nil, -100
+local MYROLE = CONFIG.ROLE
 local W, H = scr.w, scr.h
 
 local function cmd(action)
@@ -84,9 +85,9 @@ local function renderRPCP()
             not d.ignited and not S.igniting)
         scr:button(3 + half, 3, W - 1, 5, "SCRAM", ui.c.alarm, "scram",
             d.ignited)
-        local q = math.floor((W - 8) / 4)
+        local q = math.floor((W - 12) / 5)
         local btns = { {"T-", "fcvDown"}, {"T+", "fcvUp"},
-                       {"FD", "fvd"}, {"FT", "fvt"} }
+                       {"FD", "fvd"}, {"FT", "fvt"}, {"M1", "mode1"} }
         for i, b in ipairs(btns) do
             local x = 2 + (i - 1) * (q + 2)
             scr:button(x, 6, x + q - 1, 6, b[1], ui.c.line, b[2], true)
@@ -121,12 +122,14 @@ local function renderRPCP()
             "fcvDown", true)
         scr:button(4 + half, vy + 1, 4 + 2 * half, vy + 2, "THR +",
             ui.c.okDim, "fcvUp", true)
-        local third = math.floor((W - 10) / 3)
+        local q4 = math.floor((W - 12) / 4)
         local ty = vy + 4
-        scr:button(2, ty, 2 + third, ty + 1, "FV-D", ui.c.line, "fvd", true)
-        scr:button(4 + third, ty, 4 + 2 * third, ty + 1, "FV-T", ui.c.line,
+        scr:button(2, ty, 2 + q4, ty + 1, "FV-D", ui.c.line, "fvd", true)
+        scr:button(4 + q4, ty, 4 + 2 * q4, ty + 1, "FV-T", ui.c.line,
             "fvt", true)
-        ackButton(6 + 2 * third, ty, W - 1, ty + 1)
+        scr:button(6 + 2 * q4, ty, 6 + 3 * q4, ty + 1, "MODE1", ui.c.okDim,
+            "mode1", true)
+        ackButton(8 + 3 * q4, ty, W - 1, ty + 1)
         local vlabels = { {"CORE", "page:CORE"}, {"PARM", "page:PARAMS"},
                           {"STM", "page:STEAM"}, {"ALM", "page:ALARMS"},
                           {"SET", "page:SETUP"} }
@@ -233,6 +236,24 @@ while true do
         if type(b) == "table" and b.type == "state" then
             S = b
             lastSeen = os.clock()
+        end
+    elseif event == "rednet_message" and c == "scada_mgmt" then
+        if type(b) == "table" then
+            if b.type == "reboot" and (b.target == "ALL"
+                or b.target == MYROLE) then
+                print("remote reboot (" .. tostring(b.target) .. ")")
+                sleep(0.5)
+                os.reboot()
+            elseif b.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(a, { type = "pong", role = MYROLE, version = v },
+                    "scada_mgmt")
+            end
         end
     elseif event == "monitor_touch" and a == scr.name then
         local action = scr:hitTest(b, c)

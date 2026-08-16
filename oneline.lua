@@ -21,6 +21,7 @@ if not modem then error("One-line display needs a modem on the plant network", 0
 rednet.open(peripheral.getName(modem))
 
 local S, lastSeen = nil, -100
+local MYROLE = "ONELINE"
 local tick = 0
 local W, H = scr.w, scr.h
 
@@ -129,7 +130,7 @@ local function render()
     local d = S.data
     local status, sc = "STANDBY", ui.c.dim
     if S.igniting then status, sc = "IGNITION SEQUENCE IN PROGRESS", ui.c.warn
-    elseif d.ignited then status, sc = "MODE 1 - POWER OPERATION", ui.c.ok end
+    elseif d.ignited then status, sc = d.modeText or "MODE 1", ui.c.ok end
     scr:center(1, W, 2, status, sc, ui.c.panel)
     if (S.unacked or 0) > 0 and tick % 4 < 2 then
         scr:text(W - 22, 1, " ALM " .. S.unacked .. " ", ui.c.text, ui.c.alarm)
@@ -196,7 +197,7 @@ local function render()
     local function lY(i) return L.firstBy + (i - 1) * loopH end
     local topY = lY(1)
     local botY = lY(N)
-    local condBot = botY + (detailed and unitH + 3 or 4)
+    local condBot = botY + (detailed and unitH - 2 or 4)
     local anyFlow = d.steamFlow > 100
     lineV(L.steamX, topY, botY, ui.c.steam, anyFlow)
     lineV(L.condX, topY + 4, condBot, ui.c.water, anyFlow)
@@ -204,7 +205,7 @@ local function render()
     lineV(L.steamX, math.min(L.coreY1 + 3, topY), math.max(L.coreY1 + 3, topY),
         ui.c.steam, false)
     lineV(L.condX, L.coreY2 - 3, condBot, ui.c.water, false)
-    lineH(28, L.condX, L.coreY2 - 3, ui.c.water, anyFlow)
+    lineH(L.condX, 28, L.coreY2 - 3, ui.c.water, anyFlow)
     scr:text(L.steamX + 2, topY - 2, "MAIN STEAM", ui.c.steam)
     scr:text(L.condX - 10, condBot + 1, "CONDENSATE", ui.c.water)
 
@@ -274,7 +275,7 @@ local function render()
             -- condensate return
             local cyy = byy2 + 2
             lineV(L.boxX1 + 4, byy2 + 1, cyy, ui.c.water, flowing)
-            lineH(L.condX, L.boxX1 + 4, cyy, ui.c.water, flowing)
+            lineH(L.boxX1 + 4, L.condX, cyy, ui.c.water, flowing) -- toward trunk
             valveH(L.msValve, cyy, "CS-" .. i .. "V1", open)
             inset(L.insetX, cyy + 1, 14, ui.si(open and t.flow or 0, "mB/t"))
         else
@@ -286,7 +287,7 @@ local function render()
             scr:text(L.sgX + 20, by, ui.pct(t.water or 0), ui.c.text)
             local cyy = by + 4
             lineV(L.boxX1 + 4, by + 3, cyy, ui.c.water, flowing)
-            lineH(L.condX, L.boxX1 + 4, cyy, ui.c.water, flowing)
+            lineH(L.boxX1 + 4, L.condX, cyy, ui.c.water, flowing)
             valveH(L.msValve, cyy, "CS-" .. i .. "V1", open)
             inset(L.insetX, cyy + 1, 14, ui.si(open and t.flow or 0, "mB/t"))
         end
@@ -339,6 +340,24 @@ while true do
         if type(b) == "table" and b.type == "state" then
             S = b
             lastSeen = os.clock()
+        end
+    elseif event == "rednet_message" and c == "scada_mgmt" then
+        if type(b) == "table" then
+            if b.type == "reboot" and (b.target == "ALL"
+                or b.target == MYROLE) then
+                print("remote reboot (" .. tostring(b.target) .. ")")
+                sleep(0.5)
+                os.reboot()
+            elseif b.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(a, { type = "pong", role = MYROLE, version = v },
+                    "scada_mgmt")
+            end
         end
     elseif event == "monitor_resize" and a == scr.name then
         scr = ui.attach(scr.name, CONFIG.scale)

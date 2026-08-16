@@ -296,6 +296,31 @@ function Screen:bandBar(x, y, w, frac, lo, hi)
     if pos + 1 <= x + w - 1 then self:px(pos + 1, y, colour) end
 end
 
+-- absolute-scale spark: bars scaled 0..maxV with dotted threshold
+-- ticks at 85% (warn) and 95% (alarm) so margin-to-limit is visible
+function Screen:sparkAbs(x, y, w, h, hist, maxV, colour)
+    maxV = math.max(ui.sane(maxV), 1)
+    self:fill(x, y, x + w - 1, y + h - 1, ui.c.bg)
+    local function tickRow(frac, col)
+        local ty = y + h - 1 - math.floor((h - 1) * frac + 0.5)
+        for cx = x, x + w - 1, 2 do self:px(cx, ty, col) end
+    end
+    tickRow(0.85, ui.c.warnDim)
+    tickRow(0.95, ui.c.alarm)
+    local n = #hist
+    for col = 0, w - 1 do
+        local idx = n - w + col + 1
+        if idx >= 1 then
+            local frac = math.max(0, math.min(1, ui.sane(hist[idx]) / maxV))
+            local bars = math.floor(h * frac + 0.5)
+            if frac > 0 and bars < 1 then bars = 1 end
+            if bars > 0 then
+                self:fill(x + col, y + h - bars, x + col, y + h - 1, colour)
+            end
+        end
+    end
+end
+
 -- LOI (loss of indication): white box where a live value should be.
 -- Draw instead of the value when its sensor source is stale.
 function Screen:loiBox(x, y, w, label)

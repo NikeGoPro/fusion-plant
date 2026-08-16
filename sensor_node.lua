@@ -204,6 +204,25 @@ while true do
     while true do
         local ev, a, b, c = os.pullEvent()
         if ev == "timer" and a == timer then break end
+        if ev == "rednet_message" and c == "scada_mgmt"
+            and type(b) == "table" then
+            local myrole = "NODE_" .. CONFIG.NODE
+            if b.type == "reboot" and (b.target == "ALL"
+                or b.target == myrole) then
+                print("remote reboot")
+                sleep(0.5)
+                os.reboot()
+            elseif b.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(a, { type = "pong", role = myrole, version = v },
+                    "scada_mgmt")
+            end
+        end
         if ev == "rednet_message" and c == "scada_actuate"
             and type(b) == "table" and b.target == CONFIG.NODE
             and b.set == "injection" and type(b.value) == "number" then

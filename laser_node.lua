@@ -125,6 +125,24 @@ while true do
                 pendingAt = nil
             end
         end
+    elseif event == "rednet_message" and c == "scada_mgmt" then
+        if type(b) == "table" then
+            if b.type == "reboot" and (b.target == "ALL"
+                or b.target == "NODE_LASER") then
+                print("remote reboot (" .. tostring(b.target) .. ")")
+                sleep(0.5)
+                os.reboot()
+            elseif b.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(a, { type = "pong", role = "NODE_LASER", version = v },
+                    "scada_mgmt")
+            end
+        end
     elseif event == "rednet_message" and c == "scada_actuate" then
         if type(b) == "table" and b.target == "LASER"
             and b.set == "fire" then

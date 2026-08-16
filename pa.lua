@@ -126,7 +126,24 @@ end
 
 local function rednetLoop()
     while true do
-        local sender, msg = rednet.receive(CONFIG.PROTOCOL)
+        local sender, msg, proto = rednet.receive()
+        if proto == "scada_mgmt" and type(msg) == "table" then
+            if msg.type == "reboot" and (msg.target == "ALL"
+                or msg.target == "PA") then
+                sleep(0.5)
+                os.reboot()
+            elseif msg.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(sender, { type = "pong", role = "PA",
+                    version = v }, "scada_mgmt")
+            end
+        end
+        if proto ~= CONFIG.PROTOCOL then msg = nil end
         if type(msg) == "table" then
             if msg.type == "play" and type(msg.name) == "string" then
                 if msg.interrupt then

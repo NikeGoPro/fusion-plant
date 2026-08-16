@@ -136,18 +136,23 @@ end
 -- ALARM ENGINE (latched, acknowledgeable, logged)
 ---------------------------------------------------------------
 local loiList = {}  -- role -> true while a known node's link is lost
+local scramAt = nil -- when a SCRAM was commanded (for fail-to-scram watch)
 
 local ALARM_DEFS = {
-    {id = "PLT_HI",  label = "PLASMA TEMP HI",  f = function(d)
+    {id = "PLT_HI",  label = "PLASMA TEMP HI",  sustain = 1, f = function(d)
+        if d.rxStale then return nil end
         if d.plasmaTemp > 0.95 * d.maxPlasma then return "alarm"
         elseif d.plasmaTemp > 0.85 * d.maxPlasma then return "warn" end end},
-    {id = "CST_HI",  label = "CASE TEMP HI",    f = function(d)
+    {id = "CST_HI",  label = "CASE TEMP HI",    sustain = 1, f = function(d)
+        if d.rxStale or chInvalid.case then return nil end
         if d.caseTemp > 0.95 * d.maxCase then return "alarm"
         elseif d.caseTemp > 0.85 * d.maxCase then return "warn" end end},
-    {id = "WTR_LO",  label = "RX WATER LVL LO", f = function(d)
+    {id = "WTR_LO",  label = "RX WATER LVL LO", sustain = 2, f = function(d)
+        if d.rxStale or chInvalid.water then return nil end
         if d.water < 0.15 then return "alarm"
         elseif d.water < 0.30 then return "warn" end end},
-    {id = "STM_HI",  label = "RX STEAM PRESS HI", f = function(d)
+    {id = "STM_HI",  label = "RX STEAM PRESS HI", sustain = 2, f = function(d)
+        if d.rxStale or chInvalid.steam then return nil end
         if d.steam > 0.92 then return "alarm"
         elseif d.steam > 0.80 then return "warn" end end},
     {id = "DT_LO",   label = "D-T FUEL LO",     f = function(d)
@@ -157,18 +162,18 @@ local ALARM_DEFS = {
         if d.deut < 0.15 then return "warn" end end},
     {id = "T_LO",    label = "TRITIUM LO",      f = function(d)
         if d.trit < 0.15 then return "warn" end end},
-    {id = "TB_TRIP", label = "TURBINE TRIP",    f = function(d)
+    {id = "TB_TRIP", label = "TURBINE TRIP",    sustain = 10, f = function(d)
         if not d.ignited then return end
         for _, t in ipairs(d.turbines) do
             if t.online and t.flow < 100 then return "alarm" end
         end end},
-    {id = "FLOW_LO", label = "STEAM FLOW LO",   f = function(d)
+    {id = "FLOW_LO", label = "STEAM FLOW LO",   sustain = 10, f = function(d)
         if d.ignited and d.steamFlow < 7.0e6 then return "warn" end end},
     {id = "LSR_LO",  label = "LASER BANK LO",   f = function(d)
         for _, l in ipairs(d.lasers) do
             if l < 0.5 and not d.ignited then return "warn" end
         end end},
-    {id = "SG_LVL", label = "SG LEVEL LO",     f = function(d)
+    {id = "SG_LVL", label = "SG LEVEL LO",     sustain = 5, f = function(d)
         local worst
         for _, t in ipairs(d.turbines) do
             if t.online and t.water then
@@ -177,18 +182,26 @@ local ALARM_DEFS = {
             end
         end
         return worst end},
+    {id = "CH_INV", label = "RPI CH INVALID", f = function()
+        for _ in pairs(chInvalid) do return "warn" end end},
     {id = "LOI", label = "LOSS OF INDICATION", f = function()
         for _ in pairs(loiList) do return "warn" end end},
-    {id = "MTX_HI", label = "IND MATRIX HI",   f = function(d)
+    {id = "MTX_HI", label = "IND MATRIX HI",   sustain = 3, f = function(d)
         local e = d.matrix and d.matrix.energy or 0
         if e > 0.97 then return "alarm" elseif e > 0.90 then return "warn" end end},
-    {id = "TPROD", label = "T PROD MARGIN LO", f = function(d)
+    {id = "TPROD", label = "T PROD MARGIN LO", sustain = 10, f = function(d)
         if d.ignited and (d.prodT or 99) < d.injection / 2 then return "warn" end end},
+    {id = "ATWS",   label = "FAIL TO SCRAM",    f = function(d)
+        if scramAt and os.clock() - scramAt > 10 and d.ignited then
+            return "alarm"
+        end end},
     {id = "SCRAM",   label = "REACTOR SCRAM",   f = function() end}, -- event-latched
     {id = "FLAMEOUT", label = "RX FLAMEOUT",    f = function() end}, -- event-latched
 }
 
 local alarmState = {}   -- id -> {state="warn"/"alarm", acked=bool}
+local alarmPend = {}    -- id -> os.clock when condition first seen (sustain)
+local chInvalid = {}    -- param -> true when reading failed plausibility
 local alarmLog = {}     -- {time, text, colour}
 local firstOut = nil    -- first red alarm since last acknowledge (RPS first-out)
 
@@ -216,7 +229,9 @@ local function rpsAction()
         if a and a.state == "alarm" then red = true break end
     end
     if red and not prevRed then
-        if DATA.battleshort then
+        if igniting then
+            logEvent("RPS STARTUP BYPASS - ACTION INHIBITED", ui.c.caution)
+        elseif DATA.battleshort then
             logEvent("RPS TRIP BLOCKED - BATTLESHORT", ui.c.warn)
         elseif DATA.ignited and not tripLatched then
             tripLatched = true
@@ -232,14 +247,29 @@ local function rpsAction()
 end
 
 local function evalAlarms()
+    local now = os.clock()
     for _, def in ipairs(ALARM_DEFS) do
-        local s = def.f(DATA)
-        local cur = alarmState[def.id]
-        if s and (not cur or cur.state ~= s) then
-            raiseAlarm(def.id, def.label, s)
-        elseif not s and cur and def.id ~= "SCRAM" then
-            alarmState[def.id] = nil
-            logEvent(def.label .. " CLEARED", ui.c.okDim)
+        local state = def.f(DATA)
+        if state then
+            alarmPend[def.id] = alarmPend[def.id] or now
+            if now - alarmPend[def.id] >= (def.sustain or 0) then
+                local a = alarmState[def.id]
+                if not a or a.state ~= state then
+                    raiseAlarm(def.id, def.label, state)
+                    logEvent(def.label .. " [" .. state:upper() .. "]",
+                        state == "alarm" and ui.c.alarm or ui.c.warn)
+                    if state == "alarm" then
+                        ui.sound("block.note_block.pling", 1, 0.5)
+                    end
+                end
+            end
+        else
+            alarmPend[def.id] = nil
+            if alarmState[def.id] and def.id ~= "SCRAM"
+                and def.id ~= "FLAMEOUT" then
+                alarmState[def.id] = nil
+                logEvent(def.label .. " CLEARED", ui.c.okDim)
+            end
         end
     end
 end
@@ -357,17 +387,46 @@ local function mergeTelemetry()
         for _, e in pairs(rt.readings) do
             if e.getPlasmaTemperature ~= nil or e.isIgnited ~= nil then
                 DATA.rxLive = true
+                chInvalid = {}
+                -- plausibility-validated assignment: hold last-good on junk
+                local function qtemp(raw, maxV, key)
+                    local v = ui.sane(raw)
+                    if v <= 0 or v > math.max(ui.sane(maxV), 1) * 2 then
+                        chInvalid[key] = true
+                        return nil
+                    end
+                    return v
+                end
+                local function qpct(raw, key)
+                    local v = ui.sane(raw)
+                    if v > 1.5 and v <= 100.5 then
+                        return v / 100 -- 0-100 scale source: normalize
+                    elseif v < 0 or v > 1.001 then
+                        chInvalid[key] = true
+                        return nil
+                    end
+                    return v
+                end
                 if e.getPlasmaTemperature then
-                    DATA.plasmaTemp = e.getPlasmaTemperature
+                    DATA.plasmaTemp = qtemp(e.getPlasmaTemperature,
+                        DATA.maxPlasma, "plasma") or DATA.plasmaTemp
                 end
                 DATA.caseTemp = e.getCaseTemperature or DATA.caseTemp
-                DATA.ignited = e.isIgnited == true
+                if e.isIgnited ~= nil then
+                    DATA.ignited = (e.isIgnited == true)
+                else
+                    -- adapter doesn't report ignition: infer from physics.
+                    -- burning plasma is megakelvin-scale; cold is ~300 K.
+                    DATA.ignited = ui.sane(DATA.plasmaTemp) > 1e6
+                end
                 if e.getInjectionRate then DATA.injection = e.getInjectionRate end
                 if e.getWaterFilledPercentage then
-                    DATA.water = ui.sane(e.getWaterFilledPercentage)
+                    DATA.water = qpct(e.getWaterFilledPercentage, "water")
+                        or DATA.water
                 end
                 if e.getSteamFilledPercentage then
-                    DATA.steam = ui.sane(e.getSteamFilledPercentage)
+                    DATA.steam = qpct(e.getSteamFilledPercentage, "steam")
+                        or DATA.steam
                 end
                 -- Mekanism reports Joules; FE = J * 0.4
                 if e.getProductionRate then
@@ -383,6 +442,7 @@ local function mergeTelemetry()
         -- backup online detection: reactor already burning (or link
         -- restored mid-run) lights the plant up without our sequence
         if DATA.rxLive then
+            if not DATA.ignited then scramAt = nil end
             if DATA.ignited and not rxWasIgnited then
                 logEvent("REACTOR REPORTING IGNITED - MODE 1", ui.c.ok)
                 paAmbient("engine_room")
@@ -402,6 +462,27 @@ local function mergeTelemetry()
                 paAmbient(nil)
             end
             rxWasIgnited = DATA.ignited
+        end
+    end
+    DATA.rxStale = (knownNodes["NODE_REACTOR"] == true) and not DATA.rxLive
+    -- induction matrix: measured generation = what reaches the bus
+    DATA.mtxLive = false
+    local mt = telemetry["MATRIX"]
+    if mt and os.clock() - mt.t < TELEM_FRESH and mt.readings then
+        for _, e in pairs(mt.readings) do
+            if e.getLastInput ~= nil or e.getMaxEnergy ~= nil then
+                DATA.mtxLive = true
+                local maxE = ui.sane(e.getMaxEnergy)
+                if maxE > 0 then
+                    DATA.matrix.energy = math.max(0, math.min(1,
+                        ui.sane(e.getEnergy) / maxE))
+                end
+                -- Mekanism reports J/t; FE = J * 0.4
+                DATA.matrix.input = ui.sane(e.getLastInput) * 0.4
+                DATA.matrix.output = ui.sane(e.getLastOutput) * 0.4
+                DATA.production = DATA.matrix.input
+                break
+            end
         end
     end
     -- tanks: AUTO-BIND by stored substance (no name mapping needed).
@@ -464,10 +545,26 @@ local function mergeTelemetry()
     end
 end
 
+-- operating mode derives from measured state, never asserted
+local function setMode()
+    if DATA.ignited then
+        if DATA.injection <= 4 then
+            DATA.modeText = "MODE 1 - MIN SUSTAINING POWER"
+        elseif DATA.injection < 98 then
+            DATA.modeText = "MODE 2 - POWER OPERATION"
+        else
+            DATA.modeText = "MODE 3 - FULL POWER"
+        end
+    else
+        DATA.modeText = "STANDBY - REACTOR SHUTDOWN"
+    end
+end
+
 local function readData()
     valveTick()
     if not CONFIG.SIM then
         mergeTelemetry()
+        setMode()
         evalAlarms()
         return
     end -- real peripherals wire in here later
@@ -535,6 +632,7 @@ local function readData()
         for i = 1, 4 do DATA.lasers[i] = clamp(DATA.lasers[i] + 0.01, 0, 1) end
     end
     mergeTelemetry()
+    setMode()
     rpsAction()
     push(hist.plasma, DATA.plasmaTemp); push(hist.case, DATA.caseTemp)
     push(hist.prod, DATA.production);   push(hist.flow, DATA.steamFlow)
@@ -586,7 +684,7 @@ end
 -- sensors the plant EXPECTS: never-seen counts as loss of indication.
 -- extend this list as the plant grows (TANKS, FUEL, MATRIX, TB3...).
 local EXPECTED_SENSORS = {
-    "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS",
+    "NODE_REACTOR", "NODE_TB1", "NODE_TB2", "NODE_TANKS", "NODE_MATRIX",
     -- (no FUEL node: production rates get computed from tank deltas
     --  once the TANKS node is bound)
 }
@@ -616,7 +714,7 @@ local function drawChrome()
     scr:text(W - 10, 1, os.date("%H:%M:%S"), ui.c.accentDim, ui.c.panel)
     local status, sc = "STANDBY", ui.c.dim
     if igniting then status, sc = "IGNITION SEQUENCE IN PROGRESS", ui.c.warn
-    elseif DATA.ignited then status, sc = "MODE 1 - POWER OPERATION", ui.c.ok end
+    elseif DATA.ignited then status, sc = DATA.modeText or "MODE 1", ui.c.ok end
     scr:center(1, W, 1, status, sc, ui.c.panel)
     -- alarm badge
     local n = unackedCount()
@@ -746,11 +844,27 @@ local function drawChamber()
     scr:center(CB.cx - 10, CB.cx + 10, y2 + 1, "D-T INJECTION", ui.c.okDim)
 end
 
-local function graphPanel(x1, y1, x2, y2, title, series, value, colour)
+local function graphPanel(x1, y1, x2, y2, title, series, value, colour, maxV)
     scr:panel(x1, y1, x2, y2, title)
     scr:text(x1 + 2, y1 + 1, value, colour, ui.c.panel)
     local gh = y2 - y1 - 3
-    if gh >= 2 then scr:spark(x1 + 2, y1 + 3, x2 - x1 - 3, gh, series, colour) end
+    if gh >= 2 then
+        if maxV then
+            scr:sparkAbs(x1 + 2, y1 + 3, x2 - x1 - 3, gh, series, maxV, colour)
+        else
+            scr:spark(x1 + 2, y1 + 3, x2 - x1 - 3, gh, series, colour)
+        end
+    end
+end
+
+-- value / limit readout with margin colour
+local function limitVal(v, maxV)
+    local frac = ui.sane(v) / math.max(ui.sane(maxV), 1)
+    local c = ui.c.ok
+    if frac >= 0.95 then c = ui.c.alarm
+    elseif frac >= 0.85 then c = ui.c.warn end
+    return ("%s / %s  %d%%"):format(ui.si(v, "K"), ui.si(maxV, "K"),
+        math.floor(frac * 100 + 0.5)), c
 end
 
 local function renderCore()
@@ -759,15 +873,19 @@ local function renderCore()
     drawPlasmaField(intensity)
     drawChamber()
     local lh = math.floor((H - 18) / 2)
-    graphPanel(2, 5, CB.sideW, 4 + lh, "PLASMA TEMP",
-        hist.plasma, ui.si(DATA.plasmaTemp, "K"), ui.c.plasma)
-    graphPanel(2, 6 + lh, CB.sideW, 5 + 2 * lh, "CASE TEMP",
-        hist.case, ui.si(DATA.caseTemp, "K"), ui.c.warn)
-    local rx1 = W - CB.sideW
-    graphPanel(rx1, 5, W - 1, 4 + lh, "NET PRODUCTION",
+    local pv, pc = limitVal(DATA.plasmaTemp, DATA.maxPlasma)
+    graphPanel(2, 5, CB.sideW, 4 + lh, "PLASMA TEMP", hist.plasma, pv, pc,
+        DATA.maxPlasma)
+    local cv, cc = limitVal(DATA.caseTemp, DATA.maxCase)
+    graphPanel(2, 6 + lh, CB.sideW, 5 + 2 * lh, "CASE TEMP", hist.case, cv, cc,
+        DATA.maxCase)
+    graphPanel(rx1, 5, W - 1, 4 + lh,
+        DATA.mtxLive and "GENERATION (MATRIX INPUT)" or "NET PRODUCTION (SIM)",
         hist.prod, ui.si(DATA.production, "FE/t"), ui.c.caution)
-    graphPanel(rx1, 6 + lh, W - 1, 5 + 2 * lh, "STEAM FLOW",
-        hist.flow, ui.si(DATA.steamFlow, "mB/t"), ui.c.steam)
+    local expFlow = math.max(DATA.injection * 150000, 1e6)
+    graphPanel(rx1, 6 + lh, W - 1, 5 + 2 * lh, "STEAM FLOW vs EXPECTED",
+        hist.flow, ui.si(DATA.steamFlow, "mB/t") .. " / "
+        .. ui.si(expFlow, ""), ui.c.accentDim, expFlow * 1.15)
     -- inventory strip above master control
     local sy = H - 9
     scr:panel(2, sy, W - 1, H - 5, "INVENTORY")
@@ -1014,6 +1132,39 @@ local function renderSetup()
     end
     y = y + 2
 
+    scr:text(4, y, "-- REACTOR LINK (raw adapter fields) --", ui.c.accent,
+        ui.c.panel)
+    y = y + 1
+    local rt = telemetry["REACTOR"]
+    if rt and rt.readings then
+        local shown = 0
+        for _, e in pairs(rt.readings) do
+            local keys = {}
+            for k in pairs(e) do
+                if k ~= "type" then keys[#keys + 1] = k end
+            end
+            table.sort(keys)
+            for _, k in ipairs(keys) do
+                if shown >= 8 or y > H - 22 then break end
+                local v = e[k]
+                if type(v) == "number" then v = ui.si(v, "") end
+                scr:text(4, y, k:gsub("^get", ""):sub(1, 24), ui.c.dim,
+                    ui.c.panel)
+                scr:text(30, y, tostring(v):sub(1, 18), ui.c.text, ui.c.panel)
+                y = y + 1
+                shown = shown + 1
+            end
+            if shown > 0 then break end
+        end
+        if shown == 0 then
+            scr:text(4, y, "CONNECTED, NO FIELDS", ui.c.alarm, ui.c.panel)
+            y = y + 1
+        end
+    else
+        scr:text(4, y, "NO REACTOR TELEMETRY", ui.c.alarm, ui.c.panel)
+        y = y + 1
+    end
+    y = y + 1
     scr:text(4, y, "-- TANK BINDINGS (TANKS node) --", ui.c.accent, ui.c.panel)
     y = y + 1
     local tt = telemetry["TANKS"]
@@ -1091,6 +1242,7 @@ local function broadcastState()
         firstOut = firstOut,
         seq = seqStage and { stage = seqStage, info = seqInfo } or nil,
         loi = loiList,
+        chInvalid = chInvalid,
     }, "scada_state")
 end
 
@@ -1315,7 +1467,10 @@ local function ignitionSequence()
 end
 
 local function scram()
-    DATA.ignited = false
+    scramAt = os.clock()
+    if not DATA.rxLive then
+        DATA.ignited = false -- sim only: real state comes from telemetry
+    end
     DATA.valves.fvd.demand = 0
     DATA.valves.fvt.demand = 0
     DATA.valves.fcv.demand = 0
@@ -1364,6 +1519,13 @@ local function handleAction(action)
         logEvent(action:upper() .. (v.demand > 50 and " OPENING" or " CLOSING"),
             v.demand > 50 and ui.c.okDim or ui.c.warn)
         ui.beep(v.demand > 50 and 12 or 6)
+    elseif action == "mode1" then
+        DATA.valves.fvd.demand = 100
+        DATA.valves.fvt.demand = 100
+        DATA.valves.fcv.demand = 200 / 49 -- two steps = 4 mB/t
+        saveValves()
+        logEvent("MODE 1 LINEUP - FUEL VALVES OPEN, MIN SUSTAINING", ui.c.caution)
+        ui.sound("block.note_block.pling", 1, 1.2)
     elseif action == "battleshort" then
         DATA.battleshort = not DATA.battleshort
         logEvent(DATA.battleshort and "** BATTLESHORT SET - PROTECTION BYPASSED **"
@@ -1420,6 +1582,24 @@ while true do
         if type(x) == "table" and x.type == "telemetry" and x.node then
             telemetry[x.node] = { t = os.clock(), turbine = x.turbine,
                 tank = x.tank, readings = x.readings }
+        end
+    elseif event == "rednet_message" and y == "scada_mgmt" then
+        if type(x) == "table" then
+            if x.type == "reboot" and (x.target == "ALL"
+                or x.target == "MASTER") then
+                logEvent("REMOTE REBOOT COMMAND", ui.c.warn)
+                sleep(0.5)
+                os.reboot()
+            elseif x.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(side, { type = "pong", role = "MASTER",
+                    version = v }, "scada_mgmt")
+            end
         end
     elseif event == "rednet_message" and y == "scada_pa" then
         if type(x) == "table" and x.type == "sounds" then

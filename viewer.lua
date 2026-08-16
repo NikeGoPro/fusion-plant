@@ -16,6 +16,7 @@ if not modem then error("Steam wall needs a modem on the plant network", 0) end
 rednet.open(peripheral.getName(modem))
 
 local S = nil
+local MYROLE = "VIEW_STEAM"
 local lastSeen = -100
 local flash = false
 local W, H = scr.w, scr.h
@@ -35,7 +36,7 @@ local function chrome(title)
     end
     local status, sc = "STANDBY", ui.c.dim
     if S.igniting then status, sc = "IGNITION SEQUENCE IN PROGRESS", ui.c.warn
-    elseif S.data.ignited then status, sc = "MODE 1 - POWER OPERATION", ui.c.ok end
+    elseif S.data.ignited then status, sc = d.modeText or "MODE 1", ui.c.ok end
     scr:center(1, W, 2, status, sc, ui.c.panel)
     if (S.unacked or 0) > 0 and flash then
         scr:text(W - 22, 1, " ALM " .. S.unacked .. " ", ui.c.text, ui.c.alarm)
@@ -89,15 +90,20 @@ local function render()
         scr:text(cols[4], y, ui.si(t.prod, ""), ui.c.caution, ui.c.panel)
         scr:text(cols[5], y, ui.pct(t.steamPct), ui.c.text, ui.c.panel)
         scr:text(cols[6], y, ui.pct(t.buffer), ui.c.text, ui.c.panel)
-        scr:bandBar(cols[7], y, 20, t.water or 0, 0.40, 0.70)
-        scr:text(cols[7] + 22, y, ui.pct(t.water or 0), ui.c.text, ui.c.panel)
+        if t.water == nil then
+            scr:text(cols[7], y, "NO INSTR", ui.c.dim, ui.c.panel)
+        else
+            scr:bandBar(cols[7], y, 20, t.water, 0.40, 0.70)
+            scr:text(cols[7] + 22, y, ui.pct(t.water), ui.c.text, ui.c.panel)
+        end
         totalFlow = totalFlow + t.flow
         totalProd = totalProd + t.prod
     end
-    scr:fill(4, 21, W - 4, 21, ui.c.line)
-    scr:text(cols[1], 22, "TOTAL", ui.c.accent, ui.c.panel)
-    scr:text(cols[3], 22, ui.si(totalFlow, ""), ui.c.steam, ui.c.panel)
-    scr:text(cols[4], 22, ui.si(totalProd, ""), ui.c.caution, ui.c.panel)
+    local ty = 9 + #d.turbines * 2
+    scr:fill(4, ty - 1, W - 4, ty - 1, ui.c.line)
+    scr:text(cols[1], ty, "TOTAL", ui.c.accent, ui.c.panel)
+    scr:text(cols[3], ty, ui.si(totalFlow, ""), ui.c.steam, ui.c.panel)
+    scr:text(cols[4], ty, ui.si(totalProd, ""), ui.c.caution, ui.c.panel)
 
     scr:panel(2, H - 18, W - 1, H - 13, "INDUCTION MATRIX / SWITCHYARD")
     local gw = math.floor((W - 12) / 3)
@@ -139,6 +145,24 @@ while true do
         if type(b) == "table" and b.type == "state" then
             S = b
             lastSeen = os.clock()
+        end
+    elseif event == "rednet_message" and c == "scada_mgmt" then
+        if type(b) == "table" then
+            if b.type == "reboot" and (b.target == "ALL"
+                or b.target == MYROLE) then
+                print("remote reboot (" .. tostring(b.target) .. ")")
+                sleep(0.5)
+                os.reboot()
+            elseif b.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(a, { type = "pong", role = MYROLE, version = v },
+                    "scada_mgmt")
+            end
         end
     elseif event == "monitor_resize" and a == scr.name then
         scr = ui.attach(scr.name, 0.5)

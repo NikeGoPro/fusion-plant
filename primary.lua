@@ -18,6 +18,7 @@ if not modem then error("Primary display needs a modem on the plant network", 0)
 rednet.open(peripheral.getName(modem))
 
 local S, lastSeen = nil, -100
+local MYROLE = "PRIMARY"
 local tick = 0
 local W, H = scr.w, scr.h
 local lastStage, stageTick = nil, 0
@@ -248,7 +249,7 @@ local function render()
     local d = S.data
     local status, sc = "STANDBY", ui.c.dim
     if S.igniting then status, sc = "IGNITION SEQUENCE IN PROGRESS", ui.c.warn
-    elseif d.ignited then status, sc = "MODE 1 - POWER OPERATION", ui.c.ok end
+    elseif d.ignited then status, sc = d.modeText or "MODE 1", ui.c.ok end
     scr:center(1, W, 2, status, sc, ui.c.panel)
     if (S.unacked or 0) > 0 and tick % 4 < 2 then
         scr:text(W - 22, 1, " ALM " .. S.unacked .. " ", ui.c.text, ui.c.alarm)
@@ -287,6 +288,8 @@ local function render()
     -- production vs burn margins
     ---------------------------------------------------------
     scr:panel(34, 5, 62, 19, "PRODUCTION / BURN")
+    scr:text(52, 5, d.tanksLive and " MEAS " or " SIM ",
+        d.tanksLive and ui.c.ok or ui.c.dim, ui.c.line)
     local pD, pT = d.prodD or 0, d.prodT or 0
     if fuelLoi then pD, pT = nil, nil end
     local mD = pD and (pD - burn) or nil
@@ -322,7 +325,7 @@ local function render()
 
     -- makeup water from storage tank (drawn first: passes BEHIND fuel lines)
     lineH(31, 60, 21, ui.c.water, d.ignited)
-    lineV(60, 21, 40, ui.c.water, false)
+    lineV(60, 21, 40, ui.c.water, d.ignited)
     lineH(60, 75, 40, ui.c.water, d.ignited)
     scr:text(33, 20, "MAKEUP / FEED", ui.c.water)
     ---------------------------------------------------------
@@ -339,7 +342,7 @@ local function render()
     lineH(31, 66, 31, ui.c.ok, fueling and fvtOpen)
     valveH(50, 31, "FV-T", fvtOpen, V.fvt and V.fvt.pos)
     inset(33, 30, 11, burn .. " mB/t")
-    lineV(66, 25, 31, ui.c.okDim, false)
+    lineV(66, 25, 31, ui.c.okDim, fueling)
     lineH(66, 76, 28, ui.c.okDim, fueling)
     local fcvOpen = V.fcv and V.fcv.pos and V.fcv.pos > 1
     valveH(70, 28, "FCV-1", fcvOpen, V.fcv and V.fcv.pos)
@@ -408,11 +411,16 @@ local function render()
         { "RT-5 CASE TEMP",   st.CST_HI },
         { "RT-6 SG LEVEL",    st.SG_LVL },
     }
+    local inv = S.chInvalid or {}
+    local invMap = { [2] = inv.water, [3] = inv.steam, [5] = inv.case }
     for i, ch in ipairs(channels) do
         local y = 7 + i
         scr:text(118, y, ch[1], ui.c.dim, ui.c.panel)
         local state, c2 = "OK", ui.c.ok
-        if ch[2] == "alarm" then state, c2 = "TRIP", ui.c.alarm
+        if invMap[i] then state, c2 = "INVALID", colors.white
+        elseif d.rxStale and (i == 2 or i == 3 or i == 5) then
+            state, c2 = "INOP", ui.c.dim
+        elseif ch[2] == "alarm" then state, c2 = "TRIP", ui.c.alarm
         elseif ch[2] == "warn" then state, c2 = "PRE-TRIP", ui.c.warn end
         scr:text(W - 3 - #state, y, state, c2, ui.c.panel)
     end
@@ -428,7 +436,7 @@ local function render()
     ---------------------------------------------------------
     -- laser banks + hohlraum readiness (right, below RPS)
     ---------------------------------------------------------
-    scr:panel(116, 22, W - 1, 32, "IGNITION READINESS")
+    scr:panel(116, 22, W - 1, 32, "IGNITION READINESS (SIM)")
     for i = 1, 4 do
         local frac = (d.lasers and d.lasers[i]) or 0
         scr:gaugeH(118, 22 + i * 2, W - 121, "BANK " .. string.char(64 + i),
@@ -440,7 +448,8 @@ local function render()
     ---------------------------------------------------------
     -- induction matrix (full matrix = turbines stop = steam backup)
     ---------------------------------------------------------
-    scr:panel(116, 33, W - 1, 43, "INDUCTION MATRIX")
+    scr:panel(116, 33, W - 1, 43, "INDUCTION MATRIX"
+        .. (d.mtxLive and " (MEAS)" or " (SIM)"))
     local m = d.matrix or {}
     local mc = m.energy or 0
     local mcol = ui.c.caution
@@ -507,6 +516,24 @@ while true do
         if type(b) == "table" and b.type == "state" then
             S = b
             lastSeen = os.clock()
+        end
+    elseif event == "rednet_message" and c == "scada_mgmt" then
+        if type(b) == "table" then
+            if b.type == "reboot" and (b.target == "ALL"
+                or b.target == MYROLE) then
+                print("remote reboot (" .. tostring(b.target) .. ")")
+                sleep(0.5)
+                os.reboot()
+            elseif b.type == "ping" then
+                local v = "?"
+                if fs.exists("plant_version") then
+                    local f = fs.open("plant_version", "r")
+                    v = f.readAll()
+                    f.close()
+                end
+                rednet.send(a, { type = "pong", role = MYROLE, version = v },
+                    "scada_mgmt")
+            end
         end
     elseif event == "monitor_resize" and a == scr.name then
         scr = ui.attach(scr.name, 0.5)
